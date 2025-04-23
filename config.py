@@ -1,0 +1,25 @@
+import torch
+
+class cfg:
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    batch_size = 64
+    test_batch_size = 64
+
+    input_size = 224
+    epochs = 1
+    lr = 0.01
+    momentum = 0.9
+    seed = 1
+
+    # QAT cfg
+    start_QAT_epoch = 4
+    num_bits = 8
+
+    # log config
+    log_interval = 39
+    save_model = True
+    no_cuda = True
+
+    # file path cfg
+    dataset_root = "./data"
+    logger_path = './logger/log'

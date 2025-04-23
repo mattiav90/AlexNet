@@ -1,0 +1,11 @@
+
+#cifar10 dataset
+/data/*
+./data/*
+
+/mine/trained/*
+./mine/trained/*
+
+*.pth
+mine/*.pth
+*.pth

@@ -2,11 +2,11 @@ import torch
 
 class cfg:
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    batch_size = 64
-    test_batch_size = 64
+    batch_size = 128
+    test_batch_size = 128
 
     input_size = 224
-    epochs = 1
+    epochs = 10
     lr = 0.01
     momentum = 0.9
     seed = 1

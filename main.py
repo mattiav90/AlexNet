@@ -91,7 +91,7 @@ def train(args, model, device, train_loader, optimizer, epoch, test_loader):
 
 
 
-def main_train_fp(trainset,train_loader,testset,test_loader):
+def main_train_fp(trainset,train_loader,testset,test_loader,out_name):
 
 
     # use or not cuda. 
@@ -113,7 +113,12 @@ def main_train_fp(trainset,train_loader,testset,test_loader):
         test_model(args,model,device,test_loader)
 
     if save_model:
-        torch.save(model,"new_model.pth")
+        if out_name:
+            model_name=f"{out_name}.pth"
+        else:
+            model_name="new_model.pth"
+        
+        torch.save(model,model_name)
     
     return model
 
@@ -150,6 +155,21 @@ def main_QuantAwareTrain(trainset,train_loader,testset,test_loader):
         torch.save(model, "new_model_qat.pth")
 
     return model, stats
+
+
+
+def trainQuantAware(args, model, device, train_loader, test_loader, optimizer, epoch, stats, act_quant=False, num_bits=8 ):
+    model.train()
+
+    for batch_idx, (data,target) in enumerate(train_loader):
+        data,target = data.to(device), target.to(device)
+        optimizer.zero_grad()
+        conv1weight, conv2weight, conv3weight, conv4weight,conv5weight,\
+        fc1weight, fc2weight, stats= quantAwareTrainingForward(model, data, stats,
+                                                                   num_bits=num_bits,
+                                                                   act_quant=act_quant)
+
+
 
 
 
@@ -213,6 +233,7 @@ def load_datasets():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--test", type=str, help="Path to a trained model for testing")
+    parser.add_argument("--out",type=str,help="generated model output name")
     args = parser.parse_args()
 
     # hyperparameters
@@ -243,4 +264,4 @@ if __name__ == "__main__":
     
     # train unquantized model
     else:
-        model = main_train_fp(trainset,train_loader,testset,test_loader)
+        model = main_train_fp(trainset,train_loader,testset,test_loader,args.out)

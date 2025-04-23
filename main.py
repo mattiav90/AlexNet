@@ -10,6 +10,7 @@ import time
 from config import cfg
 
 
+# ************************************  model  ************************************ 
 
 class AlexNet(nn.Module):
     def __init__(self, num_classes=10):
@@ -66,6 +67,8 @@ class AlexNet(nn.Module):
 
 
 
+# ************************************  main_train_fp  ************************************ 
+
 def train(args, model, device, train_loader, optimizer, epoch, test_loader):
     
     # set the model  in train mode
@@ -83,11 +86,77 @@ def train(args, model, device, train_loader, optimizer, epoch, test_loader):
                 epoch, 100. * batch_idx / len(train_loader),
                 batch_idx * len(data), len(train_loader.dataset), loss.item()
             ))
-            test(args, model, device, test_loader)
+            test_model(args, model, device, test_loader)
 
 
 
-def test(args, model, device, test_loader):
+
+def main_train_fp(trainset,train_loader,testset,test_loader):
+
+
+    # use or not cuda. 
+    use_cuda = not no_cuda and torch.cuda.is_available()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # set the seed manually
+    torch.manual_seed(seed)
+
+    # instance of AlexNet
+    model = AlexNet().to(device)
+    optimizer= optim.SGD(model.parameters(),lr=lr,momentum=momentum)
+
+    # compose some args. 
+    args = {}
+    args["log_interval"] = log_interval
+    for epoch in range(1,epochs+1):
+        train(args,model,device,train_loader,optimizer,epoch,test_loader)
+        test_model(args,model,device,test_loader)
+
+    if save_model:
+        torch.save(model,"new_model.pth")
+    
+    return model
+
+
+
+# ************************************  train QAT  ************************************ 
+
+
+def main_QuantAwareTrain(trainset,train_loader,testset,test_loader):
+    use_cuda = not no_cuda and torch.cuda.is_available()
+    torch.manual_seed(seed)
+    device = torch.device("cuda" if use_cuda else "cpu")
+    kwargs = {'num_workers': 0, 'pin_memory': True} if use_cuda else {}
+
+
+    model = AlexNet().to(device)
+    optimizer = optim.SGD(model.parameters(),lr=lr,momentum=momentum)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer,step_size=10,gamma=0.1)
+    args={}
+    args["log_interval"] = log_interval
+
+    stats={}
+    for epoch in range(1,epochs+1):
+        # do not start immediately to do qat, only after some iterations
+        if epoch > start_QAT_epoch:
+            act_quant = True
+        else:
+            act_quant = False
+
+        stats = trainQuantAware(args, model, device, train_loader, test_loader, optimizer, epoch, stats, act_quant, num_bits=num_bits)
+        testQuantAware(args, model, device, test_loader, stats, act_quant, num_bits=num_bits)
+
+    if (save_model):
+        torch.save(model, "new_model_qat.pth")
+
+    return model, stats
+
+
+
+# ************************************   test_model  ************************************ 
+
+
+def test_model(args, model, device, test_loader):
     model.eval()
     test_loss = 0
     correct = 0
@@ -105,7 +174,48 @@ def test(args, model, device, test_loader):
         test_loss, 100. * correct / len(test_loader.dataset), correct, len(test_loader.dataset) ))
 
 
-def main():
+
+
+# ************************************   load datasets  ************************************ 
+
+
+
+# loading the datasets
+def load_datasets():
+    global batch_size,test_batch_size,epochs,lr,momentum,input_size,seed,log_interval,save_model,no_cuda,dataset_root
+
+    transform = transforms.Compose(
+        [
+            transforms.Resize(input_size),
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261))
+        ]
+    )
+    # load training set
+    trainset= datasets.CIFAR10(root=dataset_root,train=True,download=True,transform=transform)
+    train_loader = torch.utils.data.DataLoader(trainset, batch_size=batch_size,shuffle=True, num_workers=0)
+    # load testing set
+    testset = datasets.CIFAR10(root=dataset_root, train=False, download=True, transform=transform)
+    test_loader = torch.utils.data.DataLoader(testset, batch_size=test_batch_size, shuffle=False, num_workers=0)
+
+    return trainset,train_loader,testset,test_loader
+
+
+
+
+
+
+
+# ************************************   main  ************************************ 
+
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--test", type=str, help="Path to a trained model for testing")
+    args = parser.parse_args()
+
+    # hyperparameters
     batch_size=cfg.batch_size
     test_batch_size = cfg.test_batch_size
     epochs = cfg.epochs
@@ -118,90 +228,19 @@ def main():
     no_cuda = cfg.no_cuda
     dataset_root = cfg.dataset_root
 
-    # use or not cuda. 
-    use_cuda = not no_cuda and torch.cuda.is_available()
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    # set the seed manually
-    torch.manual_seed(seed)
-
-    transform = transforms.Compose(
-        [
-            transforms.Resize(input_size),
-            transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261))
-        ]
-    )
-
-    # load training set
-    trainset= datasets.CIFAR10(root=dataset_root,train=True,download=True,transform=transform)
-    train_loader = torch.utils.data.DataLoader(trainset, batch_size=batch_size,shuffle=True, num_workers=0)
-
-    # load testing set
-    testset = datasets.CIFAR10(root=dataset_root, train=False, download=True, transform=transform)
-    test_loader = torch.utils.data.DataLoader(testset, batch_size=test_batch_size, shuffle=False, num_workers=0)
-
-    # instance of AlexNet
-    model = AlexNet().to(device)
-    optimizer= optim.SGD(model.parameters(),lr=lr,momentum=momentum)
-
-    # compose some args. 
-    args = {}
-    args["log_interval"] = log_interval
-    for epoch in range(1,epochs+1):
-        train(args,model,device,train_loader,optimizer,epoch,test_loader)
-        test(args,model,device,test_loader)
-
-    if save_model:
-        torch.save(model,"new_model.pth")
-    
-    return model
-
-
-def run_model_test(model_path, device='cuda' if torch.cuda.is_available() else 'cpu', batch_size=100):
-
-    # Set device
-    device = torch.device(device)
-
-    # Prepare CIFAR-10 test set
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261))
-    ])
-
-    testset = datasets.CIFAR10(root="./data",train=True,download=True,transform=transform)
-    testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size,shuffle=True, num_workers=0)
-
-    # Load the full model (not just the state dict)
-    model = torch.load(model_path, map_location=device)
-    model.to(device)
-
-    # Call your test routine
-    test(None, model, device, testloader)
 
 
 
+    # load training and testing datasets
+    trainset,train_loader,testset,test_loader = load_datasets()
 
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--test", type=str, help="Path to a trained model for testing")
-    args = parser.parse_args()
-
+    # testing a pre-trained model
     if args.test:
         model = torch.load(args.test, map_location=cfg.device)
         model.to(cfg.device)
-
-        transform = transforms.Compose([
-            transforms.Resize(cfg.input_size),
-            transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261))
-        ])
-
-        testset = datasets.CIFAR10(root=cfg.dataset_root, train=False, download=True, transform=transform)
-        test_loader = torch.utils.data.DataLoader(testset, batch_size=cfg.test_batch_size, shuffle=False, num_workers=0)
-
         args_dict = {"log_interval": cfg.log_interval}
-        test(args_dict, model, cfg.device, test_loader)
+        test_model(args_dict, model, cfg.device, test_loader)
+    
+    # train unquantized model
     else:
-        model = main()
+        model = main_train_fp(trainset,train_loader,testset,test_loader)

@@ -25,3 +25,4 @@ class cfg:
     # file path cfg
     dataset_root = "./data"
     logger_path = './logger/log'
+    models_path = './models'

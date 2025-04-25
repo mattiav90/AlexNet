@@ -9,3 +9,5 @@
 *.pth
 mine/*.pth
 *.pth
+
+/models/*

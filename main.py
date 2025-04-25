@@ -126,13 +126,6 @@ def main_train_fp(trainset,train_loader,testset,test_loader,out_name):
 
         loss_acc.append([epoch,loss_temp,acc_temp])
 
-    if save_model:
-        if out_name:
-            model_name=f"{out_name}.pth"
-        else:
-            model_name="new_model.pth"
-        
-        torch.save(model,model_name)
     
     return model, loss_acc
 
@@ -168,14 +161,6 @@ def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name,sy
         scheduler.step()
 
         loss_acc.append([epoch,loss_temp,accuracy_temp])
-
-    if (save_model):
-        if model_name:
-            model_name=f"{model_name}.pth"
-        else:
-            model_name="new_model_qat.pth"
-
-        torch.save(model, model_name)
 
     return model, stats, loss_acc
 
@@ -488,6 +473,8 @@ def plot_loss_accuracy(loss_acc, title="Loss and Accuracy", save_path=None):
 
     plt.show()
 
+
+
 # ************************************   main  ************************************ 
 
 
@@ -514,6 +501,7 @@ if __name__ == "__main__":
     start_QAT_epoch = cfg.start_QAT_epoch
     num_bits = cfg.num_bits
     symmetrical = cfg.symmetrical
+    models_path = cfg.models_path
 
 
 
@@ -533,48 +521,37 @@ if __name__ == "__main__":
         # train fp model
         if not args.qat:
             model, loss_acc = main_train_fp(trainset,train_loader,testset,test_loader,args.out)
-            title = "FP on CIFAR-10"
-            path = "fp_plot.png"
         
         # train with QAT
         elif args.qat:
             model, stats, loss_acc = main_QuantAwareTrain(trainset,train_loader,testset,test_loader,args.out,symmetrical)
-            title = f"QAT {num_bits} bits on CIFAR-10"
-            path = f"qat_{num_bits}b_plot.png"
+  
+        # if not QAT
+        if not qat:
+            default_name = "fp_model"
+            title = "FP on CIFAR-10"
+            path = f"./{models_path}/{default_name}_plot.png"
 
         
+        # if QAT
+        elif qat:
+            default_name = f"qat_{num_bits}b_model"
+            title = f"QAT {num_bits} bits on CIFAR-10"
+            path = f"./{models_path}/{default_name}_plot.png"
+
+        # PLOT
         plot_loss_accuracy(loss_acc, title=title, save_path=path)
 
+        # plot accuracy, loss and save the model
+        if save_model:
+            if out_name:
+                model_name=f"./{models_path}/{out_name}.pth"
+            else:
+                model_name=f"./{models_path}/{default_name}.pth"
+
+            torch.save(model,model_name)
 
 
 
 
 
-
-    # epochs = range(1, len(loss_list) + 1)
-
-    # plt.figure(figsize=(10, 5))
-    
-    # # Plot Loss
-    # plt.subplot(1, 2, 1)
-    # plt.plot(epochs, loss_list, label='Loss', color='red', marker='o')
-    # plt.xlabel("Epoch")
-    # plt.ylabel("Loss")
-    # plt.title("Loss over Epochs")
-    # plt.grid(True)
-
-    # # Plot Accuracy
-    # plt.subplot(1, 2, 2)
-    # plt.plot(epochs, accuracy_list, label='Accuracy', color='blue', marker='o')
-    # plt.xlabel("Epoch")
-    # plt.ylabel("Accuracy")
-    # plt.title("Accuracy over Epochs")
-    # plt.grid(True)
-
-    # plt.suptitle(title)
-    # plt.tight_layout()
-
-    # if save_path:
-    #     plt.savefig(save_path)
-    # else:
-    #     plt.show()

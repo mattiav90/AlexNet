@@ -1,4 +1,5 @@
 import torch
+import math
 
 class cfg:
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -6,13 +7,13 @@ class cfg:
     test_batch_size = 128
 
     input_size = 224
-    epochs = 10
+    epochs = 2
     lr = 0.01
     momentum = 0.9
     seed = 1
 
     # QAT cfg
-    start_QAT_epoch = 4
+    start_QAT_epoch = math.floor(epochs/2)
     num_bits = 8
 
     # log config

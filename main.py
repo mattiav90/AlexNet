@@ -74,6 +74,8 @@ class AlexNet(nn.Module):
 def train(args, model, device, train_loader, optimizer, epoch, test_loader):
     
     # set the model  in train mode
+    loss_log = []
+    accuracy_log=[]
     model.train()
     for batch_idx, (data,target) in enumerate(train_loader):
         data,target = data.to(device), target.to(device)
@@ -82,13 +84,20 @@ def train(args, model, device, train_loader, optimizer, epoch, test_loader):
         loss = F.cross_entropy(output,target)
         loss.backward()
         optimizer.step()
+        
 
         if batch_idx % args["log_interval"] == 0:
+
             print('Training.  Epoch: {} [{:.0f}% ({}/{})]\tLoss: {:.6f}'.format(
                 epoch, 100. * batch_idx / len(train_loader),
                 batch_idx * len(data), len(train_loader.dataset), loss.item()
             ))
-            test_model(args, model, device, test_loader)
+            temp_loss,temp_accuracy = test_model(args, model, device, test_loader)
+
+            loss_log.append(temp_loss)
+            accuracy_log.append(temp_accuracy)
+    
+    return loss_log, accuracy_log
 
 
 
@@ -108,13 +117,12 @@ def main_train_fp(trainset,train_loader,testset,test_loader,out_name):
     optimizer= optim.SGD(model.parameters(),lr=lr,momentum=momentum)
 
     # compose some args. 
-    loss_temp = []
-    acc_temp = []
+    loss_acc = []
     args = {}
     args["log_interval"] = log_interval
     for epoch in range(1,epochs+1):
-        train(args,model,device,train_loader,optimizer,epoch,test_loader)
-        loss_temp,acc_temp=test_model(args,model,device,test_loader)
+        loss_temp,acc_temp = train(args,model,device,train_loader,optimizer,epoch,test_loader)
+        test_model(args,model,device,test_loader)
 
         loss_acc.append([epoch,loss_temp,acc_temp])
 
@@ -133,7 +141,7 @@ def main_train_fp(trainset,train_loader,testset,test_loader,out_name):
 # ************************************  train QAT  ************************************ 
 
 
-def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name):
+def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name,symm):
     use_cuda = not no_cuda and torch.cuda.is_available()
     torch.manual_seed(seed)
     device = torch.device("cuda" if use_cuda else "cpu")
@@ -156,7 +164,7 @@ def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name):
         else:
             act_quant = False
 
-        loss_temp,accuracy_temp = trainQuantAware(args, model, device, train_loader, test_loader, optimizer, epoch, stats, act_quant, num_bits=num_bits)
+        loss_temp,accuracy_temp = trainQuantAware(args, model, device, train_loader, test_loader, optimizer, epoch, stats, act_quant, num_bits=num_bits, sym=symm)
         scheduler.step()
 
         loss_acc.append([epoch,loss_temp,accuracy_temp])
@@ -176,7 +184,7 @@ def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name):
 
 
 
-def trainQuantAware(args, model, device, train_loader, test_loader, optimizer, epoch, stats, act_quant=False, num_bits=8 ):
+def trainQuantAware(args, model, device, train_loader, test_loader, optimizer, epoch, stats, act_quant=False, num_bits=8 , sym=False):
     model.train()
 
     loss_log = []
@@ -194,7 +202,7 @@ def trainQuantAware(args, model, device, train_loader, test_loader, optimizer, e
         fc1weight, fc2weight, fc3weight, stats= quantAwareTrainingForward(model, data, stats,
                                                                    num_bits=num_bits,
                                                                    act_quant=act_quant,
-                                                                   sym=True)
+                                                                   sym=sym)
         
         # for the backward pass, the weights have to be restored to the original non quantized values.
         # Fake quantization is only applied during the forward pass (to mimic quantized inference).
@@ -221,7 +229,7 @@ def trainQuantAware(args, model, device, train_loader, test_loader, optimizer, e
             epoch, 100. * batch_idx / len(train_loader) ,batch_idx * len(data),
             len(train_loader.dataset), loss.item()))
             # test the accuracy with quantized weights.
-            loss_temp, accuracy_temp = testQuantAware(args, model, device, test_loader, stats, act_quant, num_bits=num_bits)
+            loss_temp, accuracy_temp = testQuantAware(args, model, device, test_loader, stats, act_quant, num_bits=num_bits, sym=sym)
 
             loss_log.append(loss_temp)
             accuracy_log.append(accuracy_temp)
@@ -235,7 +243,7 @@ def trainQuantAware(args, model, device, train_loader, test_loader, optimizer, e
 
 
 # testing the prediction using fake quantization. 
-def testQuantAware(args, model, device, test_loader, stats, act_quant, num_bits=4):
+def testQuantAware(args, model, device, test_loader, stats, act_quant, num_bits=4, sym=False):
     model.eval()
     test_loss = 0
     correct = 0
@@ -246,7 +254,7 @@ def testQuantAware(args, model, device, test_loader, stats, act_quant, num_bits=
             fc1weight, fc2weight, fc3weight, stats = quantAwareTrainingForward(model, data, stats,
                                                                     num_bits=num_bits,
                                                                     act_quant=act_quant,
-                                                                    sym=True)
+                                                                    sym=sym)
 
             model.conv1.weight.data = conv1weight
             model.conv2.weight.data = conv2weight
@@ -277,7 +285,7 @@ def testQuantAware(args, model, device, test_loader, stats, act_quant, num_bits=
 
 def quantAwareTrainingForward(model, x, stats, vis=False, axs=None, sym=False, num_bits=8, act_quant=False):
 
-    
+
     #  ********** layer 1 **********
     # the original weightrs are saved on the side. 
     conv1weight = model.conv1.weight.data
@@ -406,8 +414,9 @@ def test_model(args, model, device, test_loader):
 
     print('\nTest set: Average loss: {:.4f}, Accuracy: {:.0f}%  ({}/{}) \n'.format(
         test_loss, accuracy, correct, len(test_loader.dataset) ))
+
+    return test_loss, accuracy
     
-    return [test_loss,accuracy]
 
 
 
@@ -504,6 +513,7 @@ if __name__ == "__main__":
     dataset_root = cfg.dataset_root
     start_QAT_epoch = cfg.start_QAT_epoch
     num_bits = cfg.num_bits
+    symmetrical = cfg.symmetrical
 
 
 
@@ -528,9 +538,9 @@ if __name__ == "__main__":
         
         # train with QAT
         elif args.qat:
-            model, stats, loss_acc = main_QuantAwareTrain(trainset,train_loader,testset,test_loader,args.out)
-            title = "QAT on CIFAR-10"
-            path = "qat_plot.png"
+            model, stats, loss_acc = main_QuantAwareTrain(trainset,train_loader,testset,test_loader,args.out,symmetrical)
+            title = f"QAT {num_bits} bits on CIFAR-10"
+            path = f"qat_{num_bits}b_plot.png"
 
         
         plot_loss_accuracy(loss_acc, title=title, save_path=path)

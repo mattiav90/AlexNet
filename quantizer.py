@@ -58,8 +58,8 @@ def quantize_tensor(x, num_bits=8, min_val=None, max_val=None, sym=False):
 
     # symmetrical quantization
     if sym:
-        #  if a min and a max are passed. that is the calculation for activation quantization threshould.
-        #  I should implement that also. here.
+        # if a min and a max are passed. that is the calculation for activation quantization threshould.
+        # I should implement that also. here.
         max_val = max(abs(min_val),abs(max_val))
         scale = max_val / (2**(num_bits-1)-1)
         zero_point=0

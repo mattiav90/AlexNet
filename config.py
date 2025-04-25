@@ -7,7 +7,7 @@ class cfg:
     test_batch_size = 128
 
     input_size = 224
-    epochs = 1
+    epochs = 20
     lr = 0.01
     momentum = 0.9
     seed = 1

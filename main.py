@@ -474,6 +474,35 @@ def plot_loss_accuracy(loss_acc, title="Loss and Accuracy", save_path=None):
     plt.show()
 
 
+# generate model name and plot name
+def name_path(models_path,qat):
+
+    # if not QAT
+    if not qat:
+        default_name = "fp_model"
+        title = "FP on CIFAR-10"
+        path = f"./{models_path}/{default_name}_plot.png"
+
+    
+    # if QAT
+    elif qat:
+        default_name = f"qat_{num_bits}b_model"
+        title = f"QAT {num_bits} bits on CIFAR-10"
+        path = f"./{models_path}/{default_name}_plot.png"
+
+    return default_name,title,path
+
+
+# save the model
+def save_model_func(model,model_name,out_name=None):
+    # plot accuracy, loss and save the model
+
+    if out_name:
+        model_name=f"./{models_path}/{out_name}.pth"
+    else:
+        model_name=f"./{models_path}/{default_name}.pth"
+
+    torch.save(model,model_name)
 
 # ************************************   main  ************************************ 
 
@@ -506,7 +535,7 @@ if __name__ == "__main__":
 
 
 
-    # load training and testing datasets
+    # load training and testing datasets 
     trainset,train_loader,testset,test_loader = load_datasets()
 
     # testing a pre-trained model
@@ -526,31 +555,16 @@ if __name__ == "__main__":
         elif args.qat:
             model, stats, loss_acc = main_QuantAwareTrain(trainset,train_loader,testset,test_loader,args.out,symmetrical)
   
-        # if not QAT
-        if not qat:
-            default_name = "fp_model"
-            title = "FP on CIFAR-10"
-            path = f"./{models_path}/{default_name}_plot.png"
 
-        
-        # if QAT
-        elif qat:
-            default_name = f"qat_{num_bits}b_model"
-            title = f"QAT {num_bits} bits on CIFAR-10"
-            path = f"./{models_path}/{default_name}_plot.png"
+        # generate plot and model name
+        default_name,title,path = name_path(models_path,args.qat)
 
-        # PLOT
+        # plot
         plot_loss_accuracy(loss_acc, title=title, save_path=path)
 
-        # plot accuracy, loss and save the model
+        # save the model
         if save_model:
-            if out_name:
-                model_name=f"./{models_path}/{out_name}.pth"
-            else:
-                model_name=f"./{models_path}/{default_name}.pth"
-
-            torch.save(model,model_name)
-
+            save_model_func(model,default_name,args.out)
 
 
 

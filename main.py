@@ -69,6 +69,17 @@ class AlexNet(nn.Module):
 
 
 
+# ************************************  pruning  ************************************ 
+
+
+def apply_pruning(model, amount):
+    for name, module in model.named_modules():
+        if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
+            # Apply or re-apply pruning to accumulate sparsity
+            prune.l1_unstructured(module, name='weight', amount=amount)
+
+
+
 # ************************************  main_train_fp  ************************************ 
 
 def train(args, model, device, train_loader, optimizer, epoch, test_loader):
@@ -102,7 +113,7 @@ def train(args, model, device, train_loader, optimizer, epoch, test_loader):
 
 
 
-def main_train_fp(trainset,train_loader,testset,test_loader,out_name):
+def main_train_fp(trainset,train_loader,testset,test_loader,out_name,prune):
 
 
     # use or not cuda. 
@@ -116,6 +127,11 @@ def main_train_fp(trainset,train_loader,testset,test_loader,out_name):
     model = AlexNet().to(device)
     optimizer= optim.SGD(model.parameters(),lr=lr,momentum=momentum)
 
+    # pruning
+    if prune:
+        prune_every = 1
+        prune_amount = prune
+
     # compose some args. 
     loss_acc = []
     args = {}
@@ -123,8 +139,12 @@ def main_train_fp(trainset,train_loader,testset,test_loader,out_name):
     for epoch in range(1,epochs+1):
         loss_temp,acc_temp = train(args,model,device,train_loader,optimizer,epoch,test_loader)
         test_model(args,model,device,test_loader)
-
         loss_acc.append([epoch,loss_temp,acc_temp])
+
+        # if pruning is active. 
+        if prune and epoch % prune_every == 0: 
+            print("pruning at epoch: ",epoch)
+            apply_pruning(model, amount=prune_amount)
 
     
     return model, loss_acc
@@ -513,6 +533,7 @@ if __name__ == "__main__":
     parser.add_argument("--test", type=str, help="Path to a trained model for testing")
     parser.add_argument("--out",type=str,help="Generated model output name")
     parser.add_argument("--qat",action="store_true",help="Quantization aware training activate ")
+    parser.add_argument("--prune",type=int,help="define pruning intensity")
     args = parser.parse_args()
 
     # hyperparameters
@@ -532,6 +553,8 @@ if __name__ == "__main__":
     symmetrical = cfg.symmetrical
     models_path = cfg.models_path
 
+    prune = args.prune * 0.1
+
 
 
 
@@ -549,7 +572,7 @@ if __name__ == "__main__":
     else:
         # train fp model
         if not args.qat:
-            model, loss_acc = main_train_fp(trainset,train_loader,testset,test_loader,args.out)
+            model, loss_acc = main_train_fp(trainset,train_loader,testset,test_loader,args.out,prune)
         
         # train with QAT
         elif args.qat:

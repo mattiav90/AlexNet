@@ -155,7 +155,7 @@ def train(args, model, device, train_loader, optimizer, epoch, test_loader,early
 
 
 
-def main_train_fp(trainset,train_loader,testset,test_loader,pruning,early_stopping=None):
+def main_train_fp(trainset,train_loader,testset,test_loader,pruning,early_stopping=None, model=None):
 
 
     # use or not cuda. 
@@ -165,10 +165,17 @@ def main_train_fp(trainset,train_loader,testset,test_loader,pruning,early_stoppi
     # set the seed manually
     torch.manual_seed(seed)
 
-    # instance of AlexNet
-    model = AlexNet().to(device)
+    # creating a new AlexNet model 
+    if model is None:
+        model = AlexNet().to(device)
+        
+    # loading an already trained model
+    else:
+        model = model.to(device)
+    
+    model.train()
     optimizer= optim.SGD(model.parameters(),lr=lr,momentum=momentum)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer,step_size=10,gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer,step_size=lr_step_size,gamma=lr_gamma)
     
     # pruning
     if pruning:
@@ -207,16 +214,21 @@ def main_train_fp(trainset,train_loader,testset,test_loader,pruning,early_stoppi
 # ************************************  train QAT  ************************************ 
 
 
-def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name,symm,early_stopping=None):
+def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name,symm,early_stopping=None, model=None):
     use_cuda = not no_cuda and torch.cuda.is_available()
     torch.manual_seed(seed)
     device = torch.device("cuda" if use_cuda else "cpu")
     kwargs = {'num_workers': 0, 'pin_memory': True} if use_cuda else {}
 
 
-    model = AlexNet().to(device)
+    if model is None:
+        model = AlexNet().to(device)
+    else:
+        model = model.to(device)
+        
+    model.train()
     optimizer = optim.SGD(model.parameters(),lr=lr,momentum=momentum)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer,step_size=10,gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer,step_size=lr_step_size,gamma=lr_gamma)
     args={}
     args["log_interval"] = log_interval
 
@@ -333,9 +345,9 @@ def testQuantAware(args, model, device, test_loader, stats, act_quant, num_bits=
 
     accuracy = 100. * correct / len(test_loader.dataset)
 
-    print('Test set: Average loss: {:.4f}, Accuracy: {:.0f}% ({}/{}) \n'.format(
+    print('Test set: Average loss: {:.4f}, Accuracy: {:.0f}% ({}/{}). lr: {} \n'.format(
         test_loss, accuracy, 
-        correct, len(test_loader.dataset) ))
+        correct, len(test_loader.dataset), lr ))
     
     return [test_loss,accuracy]
         
@@ -472,8 +484,8 @@ def test_model(args, model, device, test_loader):
 
     accuracy = 100. * correct / len(test_loader.dataset)
 
-    print('\nTest set: Average loss: {:.4f}, Accuracy: {:.0f}%  ({}/{}) \n'.format(
-        test_loss, accuracy, correct, len(test_loader.dataset) ))
+    print('\nTest set: Average loss: {:.4f}, Accuracy: {:.0f}%  ({}/{})  lr: {} \n'.format(
+        test_loss, accuracy, correct, len(test_loader.dataset), lr ))
 
     return test_loss, accuracy
     
@@ -488,21 +500,31 @@ def test_model(args, model, device, test_loader):
 # loading the datasets
 def load_datasets():
 
-    transform = transforms.Compose(
-        [
-            transforms.Resize(input_size),
-            transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261))
-        ]
-    )
+    # data augmentation for training set
+    transform_train = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),    # random crop with padding
+        transforms.RandomHorizontalFlip(),       # randomly flip images
+        transforms.Resize(input_size),           # resize to your input size
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261))   #usual normalization fot cifar10
+    ])
+
+    # no augmentation for test set
+    transform_test = transforms.Compose([
+        transforms.Resize(input_size),
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261))   #usual normalization fot cifar10
+    ])
+
     # load training set
-    trainset= datasets.CIFAR10(root=dataset_root,train=True,download=True,transform=transform)
-    train_loader = torch.utils.data.DataLoader(trainset, batch_size=batch_size,shuffle=True, num_workers=0)
+    trainset = datasets.CIFAR10(root=dataset_root, train=True, download=True, transform=transform_train)
+    train_loader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=0)
+
     # load testing set
-    testset = datasets.CIFAR10(root=dataset_root, train=False, download=True, transform=transform)
+    testset = datasets.CIFAR10(root=dataset_root, train=False, download=True, transform=transform_test)
     test_loader = torch.utils.data.DataLoader(testset, batch_size=test_batch_size, shuffle=False, num_workers=0)
 
-    return trainset,train_loader,testset,test_loader
+    return trainset, train_loader, testset, test_loader
 
 
 
@@ -545,6 +567,17 @@ def plot_loss_accuracy(loss_acc, title="Loss and Accuracy", save_path=None):
     if save_path:
         plt.savefig(save_path, dpi=300)
         print(f"Plot saved to {save_path}")
+        
+        info_path = os.path.splitext(save_path)[0] + "_info.txt"
+        final_loss = loss_y[-1]
+        final_acc  = acc_y[-1]
+        
+        with open(info_path, 'w') as f:
+            f.write(f"Title: {title}\n")
+            f.write(f"Final Loss: {final_loss:.4f}\n")
+            f.write(f"Final Accuracy: {final_acc:.4f}\n")
+        
+        print(f"Info file saved to {info_path}")
 
     plt.show()
 
@@ -590,6 +623,7 @@ if __name__ == "__main__":
     parser.add_argument("--qat",action="store_true",help="Quantization aware training activate ")
     parser.add_argument("--bit",type=int , help="quantization bits" )
     parser.add_argument("--es",type=int,help="early stopping")
+    parser.add_argument("--load",type=str,help="load an already trained model")
 
     args = parser.parse_args()
 
@@ -613,15 +647,27 @@ if __name__ == "__main__":
     pruning_every = cfg.pruning_every
     pruning_ratio = cfg.pruning_ratio
     final_sparsity = cfg.final_sparsity
+    lr_step_size = cfg.lr_step_size
+    lr_gamma = cfg.lr_gamma
 
 	
+    # overwriting the qauntization in the config file  
     if args.bit is not None:
         num_bits=args.bit
         print(f"quantizing with {num_bits}")
 
-
-    # load training and testing datasets 
+    # load training ant testing datasets
     trainset,train_loader,testset,test_loader = load_datasets()
+    
+    # load a an already trained model. to train more.
+    if args.load is not None:
+        model = torch.load(args.load, map_location=cfg.device)
+        model.to(cfg.device)
+        print(f"Model {args.load} loaded.")
+        # decrease the learning rate, because the model is already trained.
+        # this is to avoind to change the trianing rate manually. 
+        lr = lr * 0.5
+
 
     # testing a pre-trained model
     if args.test:
@@ -629,16 +675,17 @@ if __name__ == "__main__":
         model.to(cfg.device)
         args_dict = {"log_interval": cfg.log_interval}
         test_model(args_dict, model, cfg.device, test_loader)
+
     
     # train unquantized model
     else:
         # train fp model
         if not args.qat:
-            model, loss_acc = main_train_fp(trainset,train_loader,testset,test_loader,pruning,args.es)
+            model, loss_acc = main_train_fp(trainset,train_loader,testset,test_loader,pruning,args.es,model=model)
         
         # train with QAT
         elif args.qat:
-            model, stats, loss_acc = main_QuantAwareTrain(trainset,train_loader,testset,test_loader,args.out,symmetrical,args.es)
+            model, stats, loss_acc = main_QuantAwareTrain(trainset,train_loader,testset,test_loader,args.out,symmetrical,args.es,model=model)
   
 
         # generate plot and model name

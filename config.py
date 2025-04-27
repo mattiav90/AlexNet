@@ -7,7 +7,7 @@ class cfg:
     test_batch_size = 128
 
     input_size = 224
-    epochs = 20
+    epochs = 2
     lr = 0.01
     momentum = 0.9
     seed = 1
@@ -23,7 +23,7 @@ class cfg:
     pruning = False
     pruning_every = 2
     pruning_ratio = 0.1
-    final_sparsity = 25
+    final_sparsity = 50
 
     # log config
     log_interval = 40

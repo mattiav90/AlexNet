@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import torch.nn.utils.prune as prune
+import os
 
 
 # ************************************  model  ************************************ 
@@ -110,6 +111,7 @@ def calculate_sparsity(model):
                 total_elements += num_elements
 
     overall_sparsity = 100.0 * total_zeros / total_elements
+    overlall_sparsity = round(overall_sparsity, 2)
     print(f"\nOverall sparsity: {overall_sparsity:.2f}%")
 
     return overall_sparsity
@@ -205,9 +207,13 @@ def main_train_fp(trainset,train_loader,testset,test_loader,pruning,early_stoppi
     
 
     # remove pruning wrappers
-    apply_pruning_mask(model)
+    if pruning:
+        last_sparsity = calculate_sparsity(model)
+        apply_pruning_mask(model)
+    else:
+        last_sparsity=0
 
-    return model, loss_acc
+    return model, loss_acc, last_sparsity
 
 
 
@@ -246,6 +252,7 @@ def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name,sy
         scheduler.step()
 
         loss_acc.append([epoch,loss_temp,accuracy_temp])
+    
 
     return model, stats, loss_acc
 
@@ -536,6 +543,7 @@ def plot_loss_accuracy(loss_acc, title="Loss and Accuracy", save_path=None):
     loss_y = []
     acc_x  = []
     acc_y  = []
+    
 
     for entry in loss_acc:
         epoch, loss_list, acc_list = entry
@@ -583,19 +591,34 @@ def plot_loss_accuracy(loss_acc, title="Loss and Accuracy", save_path=None):
 
 
 # generate model name and plot name
-def name_path(models_path,qat):
+def name_path(models_path,qat,loss_acc, actual_sparsity):
+    
+    epoch, loss_list, acc_list = loss_acc[-1]
+    
+    loss_last = loss_list[-1]
+    acc_last = acc_list[-1]
+    
 
     # if not QAT
     if not qat:
-        default_name = "fp_model"
-        title = "FP on CIFAR-10"
+        if pruning is True:
+            default_name = f"fp_model_sp{int(actual_sparsity)}_acc{int(acc_last)}"
+            title = f"FP on CIFAR-10. sparsity: {int(actual_sparsity)}"
+        else:
+            default_name = f"fp_model_dense_acc{int(acc_last)}"
+            title = "FP on CIFAR-10. Dense"
         path = f"./{models_path}/{default_name}_plot.png"
 
     
     # if QAT
     elif qat:
-        default_name = f"qat_{num_bits}b_model"
-        title = f"QAT {num_bits} bits on CIFAR-10"
+        if pruning is True:
+            title = f"QAT {num_bits} bits Sparsity: {int(actual_sparsity)} on CIFAR-10"
+            default_name = f"qat_{num_bits}b_sp{int(actual_sparsity)}_acc{int(acc_last)}_model"
+        else:
+            title = f"QAT {num_bits} bits Dense on CIFAR-10"
+            default_name = f"qat_{num_bits}b_dense_model_acc{int(acc_last)}"
+            
         path = f"./{models_path}/{default_name}_plot.png"
 
     return default_name,title,path
@@ -650,11 +673,25 @@ if __name__ == "__main__":
     lr_step_size = cfg.lr_step_size
     lr_gamma = cfg.lr_gamma
 
-	
+    
+
     # overwriting the qauntization in the config file  
     if args.bit is not None:
         num_bits=args.bit
         print(f"quantizing with {num_bits}")
+    
+    
+    # printing a beginning of computation log 
+    if args.test is None:
+        print("**********************************")
+        print(f"Starting training. qat: {args.qat} bit: {num_bits} pruning: {pruning} final_sparsity: {final_sparsity} ")
+        print("**********************************")
+    else:
+        print("**********************************")
+        print("Testing a model: ", args.test)
+        print("**********************************")
+
+	
 
     # load training ant testing datasets
     trainset,train_loader,testset,test_loader = load_datasets()
@@ -667,6 +704,8 @@ if __name__ == "__main__":
         # decrease the learning rate, because the model is already trained.
         # this is to avoind to change the trianing rate manually. 
         lr = lr * 0.5
+    else:
+        model = None
 
 
     # testing a pre-trained model
@@ -681,7 +720,8 @@ if __name__ == "__main__":
     else:
         # train fp model
         if not args.qat:
-            model, loss_acc = main_train_fp(trainset,train_loader,testset,test_loader,pruning,args.es,model=model)
+            model, loss_acc, final_sparsity = main_train_fp(trainset,train_loader,testset,test_loader,pruning,args.es,model=model)
+            print("the final sparsity is: ", final_sparsity)
         
         # train with QAT
         elif args.qat:
@@ -689,7 +729,7 @@ if __name__ == "__main__":
   
 
         # generate plot and model name
-        default_name,title,path = name_path(models_path,args.qat)
+        default_name,title,path = name_path(models_path,args.qat, loss_acc, final_sparsity)
 
         # plot
         plot_loss_accuracy(loss_acc, title=title, save_path=path)

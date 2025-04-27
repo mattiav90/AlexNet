@@ -156,8 +156,8 @@ class FakeQuantOp(torch.autograd.Function):
         return grad_output, None, None, None, None
 
 # test
-x = torch.tensor([1, 2, 3, 4]).float()
-print(FakeQuantOp.apply(x))
+# x = torch.tensor([1, 2, 3, 4]).float()
+# print(FakeQuantOp.apply(x))
 
 
 

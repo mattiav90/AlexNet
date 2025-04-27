@@ -117,7 +117,7 @@ def calculate_sparsity(model):
 
 # ************************************  main_train_fp  ************************************ 
 
-def train(args, model, device, train_loader, optimizer, epoch, test_loader):
+def train(args, model, device, train_loader, optimizer, epoch, test_loader,early_stopping=None):
     
     # set the model  in train mode
     loss_log = []
@@ -144,15 +144,18 @@ def train(args, model, device, train_loader, optimizer, epoch, test_loader):
             loss_log.append(temp_loss)
             accuracy_log.append(temp_accuracy)
             i=i+1
-            if i==3:
-                break
+            
+            if early_stopping is not None:
+                if i== early_stopping:
+                    print("Early stopping at epoch: ", epoch)
+                    break
     
     return loss_log, accuracy_log
 
 
 
 
-def main_train_fp(trainset,train_loader,testset,test_loader,prune_amount):
+def main_train_fp(trainset,train_loader,testset,test_loader,pruning,early_stopping=None):
 
 
     # use or not cuda. 
@@ -165,9 +168,10 @@ def main_train_fp(trainset,train_loader,testset,test_loader,prune_amount):
     # instance of AlexNet
     model = AlexNet().to(device)
     optimizer= optim.SGD(model.parameters(),lr=lr,momentum=momentum)
-
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer,step_size=10,gamma=0.1)
+    
     # pruning
-    if cfg.pruning:
+    if pruning:
         prune_every = cfg.pruning_every
         prune_amount = cfg.pruning_ratio
 
@@ -176,20 +180,26 @@ def main_train_fp(trainset,train_loader,testset,test_loader,prune_amount):
     args = {}
     args["log_interval"] = log_interval
     for epoch in range(1,epochs+1):
-        loss_temp,acc_temp = train(args,model,device,train_loader,optimizer,epoch,test_loader)
+        loss_temp,acc_temp = train(args,model,device,train_loader,optimizer,epoch,test_loader,early_stopping)
         test_model(args,model,device,test_loader)
         loss_acc.append([epoch,loss_temp,acc_temp])
 
         # if pruning is active. 
-        if cfg.pruning and epoch % prune_every == 0: 
+        if pruning and epoch % prune_every == 0: 
             print("pruning at epoch: ",epoch)
             apply_pruning(model, amount=prune_amount)
-            calculate_sparsity(model)
-
-        # remove pruning wrappers
-        apply_pruning_mask(model)
+            
+            current_sparsity = calculate_sparsity(model)
+            print(f"Current sparsity: {current_sparsity:.4f}")
+            if current_sparsity >= cfg.final_sparsity:
+                pruning=False
+                print(f"sparsity ({current_sparsity}) reached final: {cfg.final_sparsity}. stopping pruning.")
 
     
+
+    # remove pruning wrappers
+    apply_pruning_mask(model)
+
     return model, loss_acc
 
 
@@ -197,7 +207,7 @@ def main_train_fp(trainset,train_loader,testset,test_loader,prune_amount):
 # ************************************  train QAT  ************************************ 
 
 
-def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name,symm):
+def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name,symm,early_stopping=None):
     use_cuda = not no_cuda and torch.cuda.is_available()
     torch.manual_seed(seed)
     device = torch.device("cuda" if use_cuda else "cpu")
@@ -220,7 +230,7 @@ def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name,sy
         else:
             act_quant = False
 
-        loss_temp,accuracy_temp = trainQuantAware(args, model, device, train_loader, test_loader, optimizer, epoch, stats, act_quant, num_bits=num_bits, sym=symm)
+        loss_temp,accuracy_temp = trainQuantAware(args, model, device, train_loader, test_loader, optimizer, epoch, stats, act_quant, num_bits=num_bits, sym=symm, early_stopping=early_stopping)
         scheduler.step()
 
         loss_acc.append([epoch,loss_temp,accuracy_temp])
@@ -232,7 +242,7 @@ def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name,sy
 
 
 
-def trainQuantAware(args, model, device, train_loader, test_loader, optimizer, epoch, stats, act_quant=False, num_bits=8 , sym=False):
+def trainQuantAware(args, model, device, train_loader, test_loader, optimizer, epoch, stats, act_quant=False, num_bits=8 , sym=False, early_stopping=None):
     model.train()
 
     loss_log = []
@@ -283,8 +293,10 @@ def trainQuantAware(args, model, device, train_loader, test_loader, optimizer, e
             accuracy_log.append(accuracy_temp)
             i=i+1
 
-            # if i==3:
-            #     break
+            if early_stopping is not None:
+                if i== early_stopping:
+                    print("Early stopping at epoch: ", epoch)
+                    break
 
     return [loss_log, accuracy_log]
 
@@ -500,8 +512,8 @@ def load_datasets():
 def plot_loss_accuracy(loss_acc, title="Loss and Accuracy", save_path=None):
     loss_x = []
     loss_y = []
-    acc_x = []
-    acc_y = []
+    acc_x  = []
+    acc_y  = []
 
     for entry in loss_acc:
         epoch, loss_list, acc_list = entry
@@ -576,9 +588,12 @@ if __name__ == "__main__":
     parser.add_argument("--test", type=str, help="Path to a trained model for testing")
     parser.add_argument("--out",type=str,help="Generated model output name")
     parser.add_argument("--qat",action="store_true",help="Quantization aware training activate ")
+    parser.add_argument("--bit",type=int , help="quantization bits" )
+    parser.add_argument("--es",type=int,help="early stopping")
+
     args = parser.parse_args()
 
-    # hyperparameters
+    # configuration file. hyperparameters
     batch_size=cfg.batch_size
     test_batch_size = cfg.test_batch_size
     epochs = cfg.epochs
@@ -597,8 +612,12 @@ if __name__ == "__main__":
     pruning = cfg.pruning
     pruning_every = cfg.pruning_every
     pruning_ratio = cfg.pruning_ratio
+    final_sparsity = cfg.final_sparsity
 
-
+	
+    if args.bit is not None:
+        num_bits=args.bit
+        print(f"quantizing with {num_bits}")
 
 
     # load training and testing datasets 
@@ -615,11 +634,11 @@ if __name__ == "__main__":
     else:
         # train fp model
         if not args.qat:
-            model, loss_acc = main_train_fp(trainset,train_loader,testset,test_loader,pruning)
+            model, loss_acc = main_train_fp(trainset,train_loader,testset,test_loader,pruning,args.es)
         
         # train with QAT
         elif args.qat:
-            model, stats, loss_acc = main_QuantAwareTrain(trainset,train_loader,testset,test_loader,args.out,symmetrical)
+            model, stats, loss_acc = main_QuantAwareTrain(trainset,train_loader,testset,test_loader,args.out,symmetrical,args.es)
   
 
         # generate plot and model name

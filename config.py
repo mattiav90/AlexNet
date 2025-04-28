@@ -7,12 +7,12 @@ class cfg:
     test_batch_size = 128
 
     input_size = 224
-    epochs = 3
+    epochs = 10
     lr = 0.01
     momentum = 0.9
     seed = 1
     lr_step_size = 10
-    lr_gamma = 0.1 
+    lr_gamma = 0.1
 
     # QAT cfg
     start_QAT_epoch = math.floor(epochs/2)
@@ -20,10 +20,10 @@ class cfg:
     symmetrical = True
 
     # pruning
-    pruning = True
+    pruning = False
     pruning_every = 2
     pruning_ratio = 0.1
-    final_sparsity = 75
+    final_sparsity = 40
 
     # log config
     log_interval = 40

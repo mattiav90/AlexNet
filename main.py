@@ -14,7 +14,7 @@ import numpy as np
 
 import torch.nn.utils.prune as prune
 import os
-
+import pickle
 
 # ************************************  model  ************************************ 
 
@@ -90,31 +90,48 @@ def apply_pruning_mask(model):
 
 
 
-def calculate_sparsity(model):
+def calculate_sparsity(model, verbose=True):
     total_zeros = 0
     total_elements = 0
+    no_mask=False
 
-    print("Layer-wise sparsity:")
+    if verbose:
+        print("Layer-wise sparsity:")
+    
     for name, module in model.named_modules():
         if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
+            # Check if the weight_mask is present
             if hasattr(module, 'weight_mask'):
-                weight = module.weight
-                mask = module.weight_mask  # This exists only if pruning has been applied
+                mask = module.weight_mask  # This should be set after pruning
+                if mask is not None:
+                    num_zeros = torch.sum(mask == 0).item()
+                    num_elements = mask.numel()
+                    layer_sparsity = 100.0 * num_zeros / num_elements
+                    
+                    if verbose:
+                        print(f"{name}: {layer_sparsity:.2f}% sparsity")
 
-                num_zeros = torch.sum(mask == 0).item()
-                num_elements = mask.numel()
-                layer_sparsity = 100.0 * num_zeros / num_elements
+                    total_zeros += num_zeros
+                    total_elements += num_elements
+                else:
+                    no_mask=True
+            else:
+                no_mask=True
 
-                print(f"{name}: {layer_sparsity:.2f}% sparsity")
+    if no_mask:
+        print(f"Warning: No weight_mask attribute found. Sparsity calculation skipped.")
+        no_mask=False
+        return 0.0
+        
+    # Calculate the overall sparsity only if total_elements > 0
+    if total_elements > 0:
+        overall_sparsity = 100.0 * total_zeros / total_elements
+        print(f"\nOverall sparsity: {overall_sparsity:.2f}%")
+        return overall_sparsity
+    else:
+        # if there is no mask on the weights yet. spardity =0.
+        return 0.0
 
-                total_zeros += num_zeros
-                total_elements += num_elements
-
-    overall_sparsity = 100.0 * total_zeros / total_elements
-    overlall_sparsity = round(overall_sparsity, 2)
-    print(f"\nOverall sparsity: {overall_sparsity:.2f}%")
-
-    return overall_sparsity
 
 
 # ************************************  main_train_fp  ************************************ 
@@ -159,7 +176,11 @@ def train(args, model, device, train_loader, optimizer, epoch, test_loader,early
 
 def main_train_fp(trainset,train_loader,testset,test_loader,pruning,early_stopping=None, model=None):
 
-
+    # temporary variable.
+    fool=False
+    if pruning and not fool:
+        fool=True
+    
     # use or not cuda. 
     use_cuda = not no_cuda and torch.cuda.is_available()
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -192,6 +213,7 @@ def main_train_fp(trainset,train_loader,testset,test_loader,pruning,early_stoppi
         loss_temp,acc_temp = train(args,model,device,train_loader,optimizer,epoch,test_loader,early_stopping)
         test_model(args,model,device,test_loader)
         loss_acc.append([epoch,loss_temp,acc_temp])
+        
 
         # if pruning is active. 
         if pruning and epoch % prune_every == 0: 
@@ -199,22 +221,92 @@ def main_train_fp(trainset,train_loader,testset,test_loader,pruning,early_stoppi
             apply_pruning(model, amount=prune_amount)
             
             current_sparsity = calculate_sparsity(model)
-            print(f"Current sparsity: {current_sparsity:.4f}")
             if current_sparsity >= cfg.final_sparsity:
                 pruning=False
                 print(f"sparsity ({current_sparsity}) reached final: {cfg.final_sparsity}. stopping pruning.")
 
-    
+        # sparsity calcualation
+        current_sparsity = calculate_sparsity(model,verbose=False)
+        print(f"Current sparsity: {current_sparsity:.4f}")
 
-    # remove pruning wrappers
-    if pruning:
+
+    # remove pruning wrappers. 
+    # if pruning was active during this training, it might be off by now.
+    if fool:
         last_sparsity = calculate_sparsity(model)
+        print("final sparsity: ", last_sparsity)
         apply_pruning_mask(model)
+        fool=False
     else:
         last_sparsity=0
 
     return model, loss_acc, last_sparsity
 
+
+# ************************************  save sparse model  ************************************
+
+# convert a layer linear or convolution into sparse rapresentation
+def convert_to_sparse(model):
+    for name, module in model.named_modules():
+        if isinstance(module, (nn.Conv2d, nn.Linear)):
+            weight = module.weight.data
+            if not weight.is_sparse:
+                sparse_weight = weight.to_sparse()
+                module.sparse_weight = sparse_weight
+                
+    return model
+
+
+# save the weights and biases in a compressed format. 
+def save_sparse_model_compressed(model, file_name):
+    model = convert_to_sparse(model)
+
+    sparse_dict = {}
+    if not file_name.endswith('.npz'):
+        file_name += '.npz'
+
+    for name, module in model.named_modules():
+        if isinstance(module, (nn.Conv2d, nn.Linear)) and hasattr(module, 'sparse_weight'):
+            sparse_weight = module.sparse_weight
+            indices = sparse_weight.indices().cpu().numpy()
+            values = sparse_weight.values().cpu().numpy()
+            shape = np.array(sparse_weight.size())
+
+            sparse_dict[f'{name}_indices'] = indices
+            sparse_dict[f'{name}_values'] = values
+            sparse_dict[f'{name}_shape'] = shape
+
+            # Save bias if exists
+            if module.bias is not None:
+                sparse_dict[f'{name}_bias'] = module.bias.detach().cpu().numpy()
+
+    np.savez_compressed(file_name, **sparse_dict)
+
+
+# loas the compressed weights and biases format. 
+def load_sparse_model(file_name, model):
+    data = np.load(file_name, allow_pickle=True)
+
+    for name, module in model.named_modules():
+        if isinstance(module, (nn.Conv2d, nn.Linear)):
+            indices_key = f'{name}_indices'
+            values_key = f'{name}_values'
+            shape_key = f'{name}_shape'
+            bias_key = f'{name}_bias'
+
+            if indices_key in data and values_key in data and shape_key in data:
+                indices = torch.tensor(data[indices_key])
+                values = torch.tensor(data[values_key])
+                shape = tuple(data[shape_key])
+
+                sparse_weight = torch.sparse_coo_tensor(indices, values, size=shape)
+                module.weight.data = sparse_weight.to_dense()
+
+            # Restore bias
+            if bias_key in data:
+                module.bias.data = torch.tensor(data[bias_key])
+
+    return model
 
 
 # ************************************  train QAT  ************************************ 
@@ -543,7 +635,14 @@ def plot_loss_accuracy(loss_acc, title="Loss and Accuracy", save_path=None):
     loss_y = []
     acc_x  = []
     acc_y  = []
-    
+
+    epoch, loss_list, acc_list = loss_acc[-1]
+    loss_last = loss_list[-1]
+    acc_last = acc_list[-1]
+    print("**********************************")
+    print("final loss: ", round(loss_last,2))
+    print("final accuracy: ", round(acc_last,2))
+    print("**********************************")
 
     for entry in loss_acc:
         epoch, loss_list, acc_list = entry
@@ -598,6 +697,10 @@ def name_path(models_path,qat,loss_acc, actual_sparsity):
     loss_last = loss_list[-1]
     acc_last = acc_list[-1]
     
+    default_name="default_name"
+    title="title"
+    path=f"./{models_path}/{default_name}.png"
+    
 
     # if not QAT
     if not qat:
@@ -605,7 +708,9 @@ def name_path(models_path,qat,loss_acc, actual_sparsity):
             default_name = f"fp_model_sp{int(actual_sparsity)}_acc{int(acc_last)}"
             title = f"FP on CIFAR-10. sparsity: {int(actual_sparsity)}"
         else:
+            print("acc_last: ", acc_last)
             default_name = f"fp_model_dense_acc{int(acc_last)}"
+            print("default_name: ", default_name)
             title = "FP on CIFAR-10. Dense"
         path = f"./{models_path}/{default_name}_plot.png"
 
@@ -624,16 +729,24 @@ def name_path(models_path,qat,loss_acc, actual_sparsity):
     return default_name,title,path
 
 
-# save the model
-def save_model_func(model,model_name,out_name=None):
-    # plot accuracy, loss and save the model
+    
 
-    if out_name:
-        model_name=f"./{models_path}/{out_name}.pth"
-    else:
-        model_name=f"./{models_path}/{default_name}.pth"
+def compute_name(qat,bits,pruning,sparsity,loss_acc):
 
-    torch.save(model,model_name)
+    _,_,acc = loss_acc[-1]
+    acc_last = acc[-1]
+
+    # format as an int. the dot create problems in the file name.
+    sparsity=int(sparsity)
+    bits=int(bits)
+    acc_last=int(acc_last)
+
+    name = f"qat_{qat}_bits_{bits}_pruning_{pruning}_sparsity_{sparsity}_acc_{acc_last}"
+    title = f"QAT {num_bits} bits Sparsity: {int(sparsity)} on CIFAR-10"
+    
+    path= f"./{models_path}/{name}"
+    
+    return name,title,path
 
 # ************************************   main  ************************************ 
 
@@ -699,6 +812,8 @@ if __name__ == "__main__":
     # load a an already trained model. to train more.
     if args.load is not None:
         model = torch.load(args.load, map_location=cfg.device)
+
+        # load_sparse_model(file,model) you need to instance alexnet separately. 
         model.to(cfg.device)
         print(f"Model {args.load} loaded.")
         # decrease the learning rate, because the model is already trained.
@@ -710,7 +825,13 @@ if __name__ == "__main__":
 
     # testing a pre-trained model
     if args.test:
-        model = torch.load(args.test, map_location=cfg.device)
+        # create instalce of the model structure
+        use_cuda = not no_cuda and torch.cuda.is_available()
+        device = torch.device("cuda" if use_cuda else "cpu")
+        model = AlexNet()
+        model=load_sparse_model(args.test,model)
+
+        # model = torch.load(args.test, map_location=cfg.device)
         model.to(cfg.device)
         args_dict = {"log_interval": cfg.log_interval}
         test_model(args_dict, model, cfg.device, test_loader)
@@ -726,17 +847,25 @@ if __name__ == "__main__":
         # train with QAT
         elif args.qat:
             model, stats, loss_acc = main_QuantAwareTrain(trainset,train_loader,testset,test_loader,args.out,symmetrical,args.es,model=model)
-  
+
+
 
         # generate plot and model name
-        default_name,title,path = name_path(models_path,args.qat, loss_acc, final_sparsity)
+        name,title,path = compute_name(args.qat,num_bits,pruning,final_sparsity,loss_acc)
 
         # plot
         plot_loss_accuracy(loss_acc, title=title, save_path=path)
 
         # save the model
         if save_model:
-            save_model_func(model,default_name,args.out)
+            
+            if pruning:
+                print("saving sparse model")
+                save_sparse_model_compressed(model,path)
+            else:
+                print("saving dense model")
+                torch.save(model.state_dict(),path)
+            
 
 
 

@@ -15,6 +15,7 @@ import numpy as np
 import torch.nn.utils.prune as prune
 import os
 import math
+import pandas as pd
 
 # ************************************  model  ************************************ 
 
@@ -119,7 +120,7 @@ def calculate_sparsity(model, verbose=True):
                 no_mask=True
 
     if no_mask:
-        print(f"Warning: No weight_mask attribute found. Sparsity calculation skipped.")
+        print(f"No weight_mask found. Sparsity calculation skipped.")
         no_mask=False
         return 0.0
         
@@ -127,7 +128,7 @@ def calculate_sparsity(model, verbose=True):
     if total_elements > 0:
         overall_sparsity = 100.0 * total_zeros / total_elements
         print(f"\nOverall sparsity: {overall_sparsity:.2f}%")
-        return overall_sparsity
+        return round(overall_sparsity,2)
     else:
         # if there is no mask on the weights yet. spardity =0.
         return 0.0
@@ -162,7 +163,9 @@ def main_train_fp(trainset,train_loader,testset,test_loader,pruning,early_stoppi
     
     model.train()
     optimizer= optim.SGD(model.parameters(),lr=lr,momentum=momentum)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer,step_size=lr_step_size,gamma=lr_gamma)
+    # scheduler = torch.optim.lr_scheduler.StepLR(optimizer,step_size=lr_step_size,gamma=lr_gamma)  # lr_step_size=10, lr_gamma=0.1
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', patience=lr_step_size, factor=lr_gamma)
+
     
     # pruning
     if pruning:
@@ -177,7 +180,8 @@ def main_train_fp(trainset,train_loader,testset,test_loader,pruning,early_stoppi
         loss_temp,acc_temp = train(args,model,device,train_loader,optimizer,epoch,test_loader,early_stopping)
 
         loss_acc.append([epoch,loss_temp,acc_temp])
-        scheduler.step()
+        # scheduler.step()
+        scheduler.step(loss_temp[-1])
         
 
         # if pruning is active. 
@@ -199,7 +203,11 @@ def main_train_fp(trainset,train_loader,testset,test_loader,pruning,early_stoppi
     if fool:
         last_sparsity = calculate_sparsity(model)
         print("final sparsity: ", last_sparsity)
-        apply_pruning_mask(model)
+        try:
+            apply_pruning_mask(model)
+        except:
+            # it is possible, with early stopping, that the pruning is active but has not been applied yet.
+            print("no pruning was applied yet.")
         fool=False
     else:
         last_sparsity=0
@@ -254,7 +262,7 @@ def train(args, model, device, train_loader, optimizer, epoch, test_loader,early
 
 
 # Save model weights
-def save_model(model, file_name):
+def save_model_func(model, file_name):
     if not file_name.endswith('.pt'):
         file_name += '.pt'
     torch.save(model.state_dict(), file_name)
@@ -289,7 +297,9 @@ def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name,sy
         
     model.train()
     optimizer = optim.SGD(model.parameters(),lr=lr,momentum=momentum)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer,step_size=lr_step_size,gamma=lr_gamma)
+    # scheduler = torch.optim.lr_scheduler.StepLR(optimizer,step_size=lr_step_size,gamma=lr_gamma)  # lr_step_size=10, lr_gamma=0.1
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', patience=lr_step_size, factor=lr_gamma)
+
 
     # pruning parameters
     if pruning: 
@@ -305,14 +315,15 @@ def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name,sy
         # or if the model is already quantized and has to be pruned. 
         if epoch > start_QAT_epoch or pruning:
             act_quant = True
-            print("QAT active")
+            print("Activation Quantization active")
         else:
             act_quant = False
-            print("QAT in-active")
+            print("Activation Quantization non-active")
 
         loss_temp,accuracy_temp = trainQuantAware(args, model, device, train_loader, test_loader, optimizer, epoch, stats, act_quant, num_bits=num_bits, sym=sym, early_stopping=early_stopping)
         loss_acc.append([epoch,loss_temp,accuracy_temp])
-        scheduler.step()
+        # scheduler.step()
+        scheduler.step(loss_temp[-1])
         
         if pruning and epoch % prune_every ==0:
             print("pruning at epoch: ",epoch)
@@ -325,7 +336,7 @@ def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name,sy
 
         # sparsity calcualation
         current_sparsity = calculate_sparsity(model,verbose=False)
-        print(f"Current sparsity: {current_sparsity:.4f}")
+        print(f"Current sparsity: {current_sparsity:.2f}")
     
     # remove pruning wrappers.
     if fool:
@@ -364,7 +375,7 @@ def trainQuantAware(args, model, device, train_loader, test_loader, optimizer, e
                                                    act_quant=act_quant,
                                                    sym=sym)
 
-        # calculate the loss
+        # calculate the loss (ON THE TRAINING SET)
         loss = F.cross_entropy(output, target)
 
         # backward pass and update
@@ -381,6 +392,7 @@ def trainQuantAware(args, model, device, train_loader, test_loader, optimizer, e
                 len(train_loader.dataset), loss.item()))
             
             # because testQuantAware calls quantAwareTrainingForward again, I have to detach it from the graph. 
+            # calculate the loss ON THE TESTING SET.
             with torch.no_grad():
                 loss_temp, accuracy_temp = testQuantAware(args, model, device, test_loader, stats,
                                                           act_quant=act_quant, num_bits=num_bits, sym=sym)
@@ -389,7 +401,7 @@ def trainQuantAware(args, model, device, train_loader, test_loader, optimizer, e
             accuracy_log.append(accuracy_temp)
             i += 1
 
-            if early_stopping is not None and i == early_stopping:
+            if early_stopping is not None and i >= early_stopping:
                 print("Early stopping at epoch: ", epoch)
                 break
 
@@ -587,7 +599,7 @@ def load_datasets():
 # ************************************   plot  ************************************ 
 
 
-def plot_loss_accuracy(loss_acc, title="Loss and Accuracy", save_path=None):
+def plot_loss_accuracy(loss_acc, qat, pruning, final_sparsity, num_bits, title="Loss and Accuracy", save_path=None):
     loss_x = []
     loss_y = []
     acc_x  = []
@@ -632,16 +644,37 @@ def plot_loss_accuracy(loss_acc, title="Loss and Accuracy", save_path=None):
         plt.savefig(save_path, dpi=300)
         print(f"Plot saved to {save_path}")
         
-        info_path = os.path.splitext(save_path)[0] + "_info.txt"
+        # save a csv file. 
+        csv_path = os.path.splitext(save_path)[0] + "_info.csv"
         final_loss = loss_y[-1]
         final_acc  = acc_y[-1]
+
+        # Dummy values - replace with your actual values or arguments
+        # model_name = title
+        if qat:
+            bits = num_bits
+        else: 
+            bits = "_"
+        quantization = qat               # e.g., 'QAT' or 'None'
         
-        with open(info_path, 'w') as f:
-            f.write(f"Title: {title}\n")
-            f.write(f"Final Loss: {final_loss:.4f}\n")
-            f.write(f"Final Accuracy: {final_acc:.4f}\n")
-        
-        print(f"Info file saved to {info_path}")
+        sparsity = final_sparsity        # or calculate dynamically
+        pruning = pruning                # or False 
+        accuracy = round(final_acc, 4)
+        loss = round(final_loss, 4)
+
+        # Create a DataFrame
+        df = pd.DataFrame([{
+            # "Model": model_name,
+            "Quant": quantization,
+            "Bit": bits,
+            "Prun": pruning,
+            "Spars": sparsity,
+            "Acc": accuracy,
+            "Loss": loss
+        }])
+
+        df.to_csv(csv_path, index=False)
+        print(f"CSV info saved to {csv_path}")
 
     plt.show()
 
@@ -768,8 +801,11 @@ if __name__ == "__main__":
     
     # load a an already trained model. to train more.
     if args.load is not None:
-        model = torch.load(args.load, map_location=cfg.device)
-
+        use_cuda = not no_cuda and torch.cuda.is_available()
+        device = torch.device("cuda" if use_cuda else "cpu")
+        model = AlexNet()
+        model=load_model(args.load,model)
+        
         # load_sparse_model(file,model) you need to instance alexnet separately. 
         model.to(cfg.device)
         print(f"Model {args.load} loaded.")
@@ -811,13 +847,12 @@ if __name__ == "__main__":
         name,title,path = compute_name(args.qat,num_bits,pruning,final_sparsity,loss_acc)
 
         # plot
-        plot_loss_accuracy(loss_acc, title=title, save_path=path)
+        plot_loss_accuracy(loss_acc, args.qat, pruning,final_sparsity, num_bits, title=title, save_path=path)
 
         # save the model in compressed format. 
         if save_model:
-
-            print("saving model in compressed format")
-            save_sparse(model,path)
+            print("saving model...")
+            save_model_func(model,path)
 
 
 

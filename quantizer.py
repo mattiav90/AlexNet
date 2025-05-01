@@ -103,33 +103,105 @@ def dequantize_tensor_sym(q_x):
 
 
 
-def updateStats(x, stats, key):
-    max_val, _ = torch.max(x, dim=1)
-    min_val, _ = torch.min(x, dim=1)
+def updateStats(x, stats, key, mode="minmax"):
+    
+    if mode=="minmax":
+        max_val, _ = torch.max(x, dim=1)
+        min_val, _ = torch.min(x, dim=1)
 
 
-    if key not in stats:
-        stats[key] = {"max": max_val.sum(), "min": min_val.sum(), "total": 1}
-    else:
-        stats[key]['max'] += max_val.sum().item()
-        stats[key]['min'] += min_val.sum().item()
-        stats[key]['total'] += 1
+        if key not in stats:
+            stats[key] = {"max": max_val.sum(), "min": min_val.sum(), "total": 1}
+        else:
+            stats[key]['max'] += max_val.sum().item()
+            stats[key]['min'] += min_val.sum().item()
+            stats[key]['total'] += 1
 
-    weighting = 2.0 / (stats[key]['total']) + 1
+        weighting = 2.0 / (stats[key]['total']) + 1
 
-    if 'ema_min' in stats[key]:
-        stats[key]['ema_min'] = weighting * (min_val.mean().item()) + (1 - weighting) * stats[key]['ema_min']
-    else:
-        stats[key]['ema_min'] = weighting * (min_val.mean().item())
+        if 'ema_min' in stats[key]:
+            stats[key]['ema_min'] = weighting * (min_val.mean().item()) + (1 - weighting) * stats[key]['ema_min']
+        else:
+            stats[key]['ema_min'] = weighting * (min_val.mean().item())
 
-    if 'ema_max' in stats[key]:
-        stats[key]['ema_max'] = weighting * (max_val.mean().item()) + (1 - weighting) * stats[key]['ema_max']
-    else:
-        stats[key]['ema_max'] = weighting * (max_val.mean().item())
+        if 'ema_max' in stats[key]:
+            stats[key]['ema_max'] = weighting * (max_val.mean().item()) + (1 - weighting) * stats[key]['ema_max']
+        else:
+            stats[key]['ema_max'] = weighting * (max_val.mean().item())
 
-    stats[key]['min_val'] = stats[key]['min'] / stats[key]['total']
-    stats[key]['max_val'] = stats[key]['max'] / stats[key]['total']
+        stats[key]['min_val'] = stats[key]['min'] / stats[key]['total']
+        stats[key]['max_val'] = stats[key]['max'] / stats[key]['total']
+        
+        # print("\n\nmin max. min: ", stats[key]['min_val'], " max: ", stats[key]['max_val'])
+    
+    elif mode=="entropy":
+        """
+        Update activation statistics using entropy-based metrics.
 
+        Args:
+            x: Activation tensor.
+            stats: Dictionary tracking per-layer stats.
+            key: Identifier for layer.
+            num_bins: Number of bins for histogram.
+            eps: Small value to avoid log(0).
+        """
+        num_bins=128
+        eps=1e-8
+        
+        # Detach and flatten
+        x_flat = x.detach().view(-1).cpu()
+        
+        # Compute min and max from actual data
+        x_min = x_flat.min().item()
+        x_max = x_flat.max().item()
+
+        if x_min == x_max:
+            # Constant activation — no entropy
+            entropy = 0.0
+            entropy_min_val = x_min
+            entropy_max_val = x_max
+        else:
+            # Histogram over [min, max]
+            hist = torch.histc(x_flat, bins=num_bins, min=x_min, max=x_max)
+            prob = hist / (hist.sum() + eps)
+            
+            # Entropy
+            entropy = -(prob * (prob + eps).log()).sum().item()
+
+            # Use cumulative distribution to find where the entropy "mass" is
+            cdf = torch.cumsum(prob, dim=0)
+            entropy_min_idx = (cdf >= 0.01).nonzero(as_tuple=True)[0].min().item()
+            entropy_max_idx = (cdf <= 0.99).nonzero(as_tuple=True)[0].max().item()
+
+            # Convert bin indices back to values
+            bin_width = (x_max - x_min) / num_bins
+            entropy_min_val = x_min + entropy_min_idx * bin_width
+            entropy_max_val = x_min + entropy_max_idx * bin_width
+
+        # Initialize or update stats
+        if key not in stats:
+            stats[key] = {
+                "total": 1,
+                "entropy_sum": entropy,
+                "ema_entropy": entropy,
+                "entropy_min_val": entropy_min_val,
+                "entropy_max_val": entropy_max_val,
+            }
+            
+        else:
+            stats[key]['total'] += 1
+            stats[key]['entropy_sum'] += entropy
+            w = 2.0 / stats[key]['total'] + 1
+            stats[key]['ema_entropy'] = w * entropy + (1 - w) * stats[key]['ema_entropy']
+            stats[key]['entropy_min_val'] = w * entropy_min_val + (1 - w) * stats[key]['entropy_min_val']
+            stats[key]['entropy_max_val'] = w * entropy_max_val + (1 - w) * stats[key]['entropy_max_val']
+            
+            # print("key: ",key," is in the stats")
+
+        stats[key]['entropy_avg'] = stats[key]['entropy_sum'] / stats[key]['total']
+
+        # print("\n\nentropy. min: ", stats[key]['entropy_min_val'], " max: ", stats[key]['entropy_max_val'])
+        
     return stats
 
 
@@ -144,6 +216,7 @@ class FakeQuantOp(torch.autograd.Function):
     def forward(ctx, x, num_bits=8, min_val=None, max_val=None, sym=False):
         # snap the weights to quantized rapresentation
         x = quantize_tensor(x, num_bits=num_bits, min_val=min_val, max_val=max_val, sym=sym)
+        # print("FakeQuantOp forward. x: ", x)
         # convert it back to floating point to allow training. 
         x = dequantize_tensor(x)
         return x

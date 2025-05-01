@@ -17,6 +17,10 @@ import os
 import math
 import pandas as pd
 
+import gc
+
+
+
 # ************************************  model  ************************************ 
 
 class AlexNet(nn.Module):
@@ -84,6 +88,41 @@ def apply_pruning(model, amount):
             prune.l1_unstructured(module, name='weight', amount=amount)
 
 
+def calculate_pruned_sparsity(model, verbose=True):
+    total_zeros = 0
+    total_elements = 0
+    found_mask = False
+
+    if verbose:
+        print("Layer-wise sparsity:")
+
+    for name, module in model.named_modules():
+        if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
+            if hasattr(module, 'weight_mask'):
+                mask = module.weight_mask
+                num_elements = mask.numel()
+                num_zeros = (mask == 0).sum().item()
+                
+                total_zeros += num_zeros
+                total_elements += num_elements
+                found_mask = True
+
+                if verbose:
+                    sparsity = 100.0 * num_zeros / num_elements
+                    print(f"{name}: {sparsity:.2f}% sparsity")
+
+    if not found_mask:
+        if verbose:
+            print("No pruning masks found. Returning 0% sparsity.")
+        return 0.0
+
+    overall_sparsity = 100.0 * total_zeros / total_elements
+    if verbose:
+        print(f"(*) Overall sparsity: {overall_sparsity:.2f}%")
+    return round(overall_sparsity, 2)
+
+
+
 def apply_pruning_mask(model):
     for name, module in model.named_modules():
         if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
@@ -91,52 +130,18 @@ def apply_pruning_mask(model):
 
 
 
-def calculate_sparsity(model, verbose=True):
-    total_zeros = 0
-    total_elements = 0
-    no_mask=False
+def reset_optimizer_state(optimizer, model):
+    for group in optimizer.param_groups:
+        for p in group['params']:
+            state = optimizer.state[p]
+            if 'momentum_buffer' in state:
+                state['momentum_buffer'].zero_()
 
-    if verbose:
-        print("Layer-wise sparsity:")
-    
-    for name, module in model.named_modules():
-        if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
-            # Check if the weight_mask is present
-            if hasattr(module, 'weight_mask'):
-                mask = module.weight_mask  # This should be set after pruning
-                if mask is not None:
-                    num_zeros = torch.sum(mask == 0).item()
-                    num_elements = mask.numel()
-                    layer_sparsity = 100.0 * num_zeros / num_elements
-                    
-                    if verbose:
-                        print(f"{name}: {layer_sparsity:.2f}% sparsity")
 
-                    total_zeros += num_zeros
-                    total_elements += num_elements
-                else:
-                    no_mask=True
-            else:
-                no_mask=True
-
-    if no_mask:
-        print(f"No weight_mask found. Sparsity calculation skipped.")
-        no_mask=False
-        return 0.0
-        
-    # Calculate the overall sparsity only if total_elements > 0
-    if total_elements > 0:
-        overall_sparsity = 100.0 * total_zeros / total_elements
-        print(f"\nOverall sparsity: {overall_sparsity:.2f}%")
-        return round(overall_sparsity,2)
-    else:
-        # if there is no mask on the weights yet. spardity =0.
-        return 0.0
 
 
 
 # ************************************  main_train_fp  ************************************ 
-
 
 
 def main_train_fp(trainset,train_loader,testset,test_loader,pruning,early_stopping=None, model=None):
@@ -177,6 +182,8 @@ def main_train_fp(trainset,train_loader,testset,test_loader,pruning,early_stoppi
     args = {}
     args["log_interval"] = log_interval
     for epoch in range(1,epochs+1):
+        
+        print("******** training fp model on a new epoch: ",epoch," ********")
         loss_temp,acc_temp = train(args,model,device,train_loader,optimizer,epoch,test_loader,early_stopping)
 
         loss_acc.append([epoch,loss_temp,acc_temp])
@@ -185,23 +192,23 @@ def main_train_fp(trainset,train_loader,testset,test_loader,pruning,early_stoppi
         
 
         # if pruning is active. 
-        if pruning and epoch % prune_every == 0: 
+        if pruning and ( epoch % prune_every==0 ) : 
             print("pruning at epoch: ",epoch)
-            apply_pruning(model, amount=prune_amount)
+            apply_pruning(model,prune_amount)
             
-            current_sparsity = calculate_sparsity(model)
+            current_sparsity = calculate_pruned_sparsity(model)
             if current_sparsity >= cfg.final_sparsity:
                 pruning=False
                 print(f"sparsity ({current_sparsity}) reached final: {cfg.final_sparsity}. stopping pruning.")
 
         # sparsity calcualation
-        current_sparsity = calculate_sparsity(model,verbose=False)
+        current_sparsity = calculate_pruned_sparsity(model,verbose=False)
 
 
     # remove pruning wrappers. 
     # if pruning was active during this training, it might be off by now.
     if fool:
-        last_sparsity = calculate_sparsity(model)
+        last_sparsity = calculate_pruned_sparsity(model)
         print("final sparsity: ", last_sparsity)
         try:
             apply_pruning_mask(model)
@@ -226,21 +233,38 @@ def train(args, model, device, train_loader, optimizer, epoch, test_loader,early
     model.train()
     i=0
     for batch_idx, (data,target) in enumerate(train_loader):
+        
+        print("training idx:", batch_idx, end='\r')
+        
         data,target = data.to(device), target.to(device)
         optimizer.zero_grad()
         output= model(data)
         loss = F.cross_entropy(output,target)
-        loss.backward()
+        
+        # ++++++++++ weight regularization ++++++++++
+        # Cross-entropy loss.
+        # base_loss = F.cross_entropy(output, target)
+        # # L1 penalty over all learnable parameters
+        # l1_penalty = sum(torch.sum(torch.abs(param)) for param in model.parameters() if param.requires_grad)
+        # # Total loss = base loss + λ * L1_penalty
+        # # to keep the weights small. 
+        # loss = base_loss + lasso_lambda * l1_penalty
+        # +++++++++++++++++++++++++++++++++++++++++++
+        
+        # compute the gradient in the backward pass
+        loss.backward() 
+        # update the weights
         optimizer.step()
         
-
+        
         if batch_idx % args["log_interval"] == 0:
 
             print('Training.  Epoch: {} [{:.0f}% ({}/{})]\tLoss: {:.6f}'.format(
                 epoch, 100. * batch_idx / len(train_loader),
                 batch_idx * len(data), len(train_loader.dataset), loss.item()
             ))
-            temp_loss,temp_accuracy = test_model(args, model, device, test_loader)
+            with torch.no_grad():  # detach the graph
+                temp_loss,temp_accuracy = test_model(args, model, device, test_loader)
 
             loss_log.append(temp_loss)
             accuracy_log.append(temp_accuracy)
@@ -278,7 +302,7 @@ def load_model(file_name, model):
 
 
 def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name,sym,pruning,early_stopping=None, model=None):
-    
+    current_sparsity=0
     # temporary variable.
     fool=False
     if pruning and not fool:
@@ -311,36 +335,43 @@ def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name,sy
     stats={}
     loss_acc =[]
     for epoch in range(1,epochs+1):
+        print(f"******* running QAT epoch {epoch} ********")
         # start QAT after some epochs number. 
         # or if the model is already quantized and has to be pruned. 
-        if epoch > start_QAT_epoch or pruning:
+        if epoch > activation_QAT_start or pruning:
             act_quant = True
             print("Activation Quantization active")
         else:
             act_quant = False
             print("Activation Quantization non-active")
 
-        loss_temp,accuracy_temp = trainQuantAware(args, model, device, train_loader, test_loader, optimizer, epoch, stats, act_quant, num_bits=num_bits, sym=sym, early_stopping=early_stopping)
+        loss_temp,accuracy_temp = trainQuantAware(args, model, device, train_loader, test_loader, optimizer, epoch, stats, act_quant, current_sparsity=current_sparsity, num_bits=num_bits, sym=sym, early_stopping=early_stopping)
         loss_acc.append([epoch,loss_temp,accuracy_temp])
         # scheduler.step()
         scheduler.step(loss_temp[-1])
+
+
+
         
-        if pruning and epoch % prune_every ==0:
+        if pruning and ( epoch%prune_every==0 or epoch>=prune_after_epoch ):
             print("pruning at epoch: ",epoch)
-            apply_pruning(model, amount=prune_amount)
+            apply_pruning(model,percentile=percentile)
+            reset_optimizer_state(optimizer, model)
+
             
-            current_sparsity = calculate_sparsity(model)
+            current_sparsity = calculate_pruned_sparsity(model)
             if current_sparsity >= cfg.final_sparsity:
                 pruning=False
                 print(f"sparsity ({current_sparsity}) reached final: {cfg.final_sparsity}. stopping pruning.")
 
+
         # sparsity calcualation
-        current_sparsity = calculate_sparsity(model,verbose=False)
+        current_sparsity = calculate_pruned_sparsity(model,verbose=False)
         print(f"Current sparsity: {current_sparsity:.2f}")
     
     # remove pruning wrappers.
     if fool:
-        last_sparsity = calculate_sparsity(model)
+        last_sparsity = calculate_pruned_sparsity(model)
         print("final sparsity: ", round(last_sparsity,2) )
         apply_pruning_mask(model)
         fool=False
@@ -354,7 +385,7 @@ def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name,sy
 
 
 # changed
-def trainQuantAware(args, model, device, train_loader, test_loader, optimizer, epoch, stats, act_quant=False, num_bits=8, sym=False, early_stopping=None):
+def trainQuantAware(args, model, device, train_loader, test_loader, optimizer, epoch, stats, act_quant=False, current_sparsity=0, num_bits=8, sym=False, early_stopping=None):
     model.train()
 
     loss_log = []
@@ -362,8 +393,6 @@ def trainQuantAware(args, model, device, train_loader, test_loader, optimizer, e
     acc_loss_log = []
 
     i = 0
-
-    print("******* running new QAT epoch ********")
 
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
@@ -373,21 +402,49 @@ def trainQuantAware(args, model, device, train_loader, test_loader, optimizer, e
         output, stats = quantAwareTrainingForward(model, data, stats,
                                                    num_bits=num_bits,
                                                    act_quant=act_quant,
-                                                   sym=sym)
+                                                   sym=sym, mode=stats_mode)
 
         # calculate the loss (ON THE TRAINING SET)
-        loss = F.cross_entropy(output, target)
+        ce_loss = F.cross_entropy(output, target)
 
-        # backward pass and update
+
+        # --- L1 regularization ---
+        l1_lambda = 1e-5
+        l1_norm = sum(p.abs().sum() for name, p in model.named_parameters() if 'weight' in name)
+        loss = ce_loss + l1_lambda * l1_norm
+        # -------------------------
+
+
+        # replace NaN or Inf with a large finite value
+        MAX_LOSS_VALUE=20
+        if not torch.isfinite(loss):
+            print(f"⚠️ Loss was non-finite (value: {loss.item()}). Clamping to {MAX_LOSS_VALUE}.", end='\r')
+            loss = torch.tensor(MAX_LOSS_VALUE, device=loss.device, dtype=loss.dtype, requires_grad=True)
+
+
+
         print("training idx:", batch_idx, end='\r')
-        # in loss.backward, python uses the computation graph that was built in the forward pass, to calculte the gradients.
-        # the graph is then deleted to save memory. 
-        loss.backward()
+        # print("running loss backward. batch_idx: ", batch_idx)
+        # loss.backward()
+        loss.backward(retain_graph=True)
         optimizer.step()
+        
+        # make sure that the previously pruned weights are not used for training.
+        # Enforce pruning masks after weight update
+        for name, module in model.named_modules():
+            if isinstance(module, (nn.Conv2d, nn.Linear)) and hasattr(module, "weight_mask"):
+                module.weight.data *= module.weight_mask
+        
+
+        # if current_sparsity < cfg.final_sparsity:
+        #     early_stopping = 1
+        # else:
+        #     early_stopping = 100
+                
 
         # logging
         if batch_idx % args["log_interval"] == 0:
-            print('QAT. Train Epoch: {} [{:.0f}% ({}/{})]\tLoss: {:.6f}'.format(
+            print('QAT. Train Epoch: {} [{:.0f}% ({}/{})] Loss: {:.6f}'.format(
                 epoch, 100. * batch_idx / len(train_loader), batch_idx * len(data),
                 len(train_loader.dataset), loss.item()))
             
@@ -395,7 +452,7 @@ def trainQuantAware(args, model, device, train_loader, test_loader, optimizer, e
             # calculate the loss ON THE TESTING SET.
             with torch.no_grad():
                 loss_temp, accuracy_temp = testQuantAware(args, model, device, test_loader, stats,
-                                                          act_quant=act_quant, num_bits=num_bits, sym=sym)
+                                                          act_quant=act_quant, num_bits=num_bits, sym=sym, is_test=True)
 
             loss_log.append(loss_temp)
             accuracy_log.append(accuracy_temp)
@@ -404,6 +461,10 @@ def trainQuantAware(args, model, device, train_loader, test_loader, optimizer, e
             if early_stopping is not None and i >= early_stopping:
                 print("Early stopping at epoch: ", epoch)
                 break
+        
+        # clean the forward graph. to make sure it is not re-used between train and inference. 
+        gc.collect()
+        torch.cuda.empty_cache()
 
     return [loss_log, accuracy_log]
 
@@ -411,7 +472,7 @@ def trainQuantAware(args, model, device, train_loader, test_loader, optimizer, e
 
 
 # changed
-def testQuantAware(args, model, device, test_loader, stats, act_quant, num_bits=4, sym=False):
+def testQuantAware(args, model, device, test_loader, stats, act_quant, num_bits=4, sym=False, is_test=False):
     model.eval()
     test_loss = 0
     correct = 0
@@ -421,10 +482,11 @@ def testQuantAware(args, model, device, test_loader, stats, act_quant, num_bits=
             data, target = data.to(device), target.to(device)
 
             print("testing: ",i , end='\r')
-            output, stats = quantAwareTrainingForward(model, data, stats,
-                                                      num_bits=num_bits,
-                                                      act_quant=act_quant,
-                                                      sym=sym)
+            with torch.no_grad():
+                output, stats = quantAwareTrainingForward(model, data, stats,
+                                                        num_bits=num_bits,
+                                                        act_quant=act_quant,
+                                                        sym=sym, is_test=is_test, mode=stats_mode)
 
             test_loss += F.cross_entropy(output, target, reduction='sum').item()  # sum up batch loss
             pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
@@ -433,24 +495,51 @@ def testQuantAware(args, model, device, test_loader, stats, act_quant, num_bits=
     test_loss /= len(test_loader.dataset)
     accuracy = 100. * correct / len(test_loader.dataset)
 
-    print('Test set: Average loss: {:.4f}, Accuracy: {:.0f}% ({}/{}).'.format(
-        test_loss, accuracy, correct, len(test_loader.dataset)))
+    print('Test set: Average loss: {:.4f}, Accuracy: {:.0f}%  ({}/{})  lr: {} '.format(
+        test_loss, accuracy, correct, len(test_loader.dataset), lr ))
     
     return [test_loss, accuracy]
 
-        
 
-# changed
-def quantAwareTrainingForward(model, x, stats, vis=False, axs=None, sym=False, num_bits=8, act_quant=False):
+
+
+
+
+
+def quantAwareTrainingForward(model, x, stats, vis=False, axs=None, sym=False, num_bits=8, act_quant=False, is_test=False, mode="minmax"):
+    
+    def apply_quant(tensor, name, mode="minmax"):
+        if is_test:
+            tensor = tensor.detach()
+        
+        if mode=="minmax":
+            return FakeQuantOp.apply(
+                tensor,
+                num_bits,
+                stats[name]['min_val'],
+                stats[name]['max_val'],
+                sym
+            )
+        elif mode=="entropy":
+            # print("passing entropy. min= ",stats[name]['entropy_min_val']," max: ",stats[name]['entropy_max_val'])
+            return FakeQuantOp.apply(
+                tensor,
+                num_bits,
+                stats[name]['entropy_min_val'],
+                stats[name]['entropy_max_val'],
+                sym
+            )
+
     # -------- Layer 1 --------
     weight = FakeQuantOp.apply(model.conv1.weight, num_bits, None, None, sym)
     x = F.conv2d(x, weight, model.conv1.bias, model.conv1.stride, model.conv1.padding, model.conv1.dilation, model.conv1.groups)
     x = F.relu(x)
     x = model.bn1(x)
     with torch.no_grad():
-        stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv1')
+        stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv1', mode=mode)
+        # stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv1', mode="entropy")
     if act_quant:
-        x = FakeQuantOp.apply(x, num_bits, stats['conv1']['ema_min'], stats['conv1']['ema_max'], sym)
+        x = apply_quant(x, 'conv1', mode=mode)
     x = F.max_pool2d(x, 3, 2)
 
     # -------- Layer 2 --------
@@ -459,9 +548,9 @@ def quantAwareTrainingForward(model, x, stats, vis=False, axs=None, sym=False, n
     x = F.relu(x)
     x = model.bn2(x)
     with torch.no_grad():
-        stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv2')
+        stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv2', mode=mode)
     if act_quant:
-        x = FakeQuantOp.apply(x, num_bits, stats['conv2']['ema_min'], stats['conv2']['ema_max'], sym)
+        x = apply_quant(x, 'conv2', mode=mode)
     x = F.max_pool2d(x, 3, 2)
 
     # -------- Layer 3 --------
@@ -470,9 +559,9 @@ def quantAwareTrainingForward(model, x, stats, vis=False, axs=None, sym=False, n
     x = F.relu(x)
     x = model.bn3(x)
     with torch.no_grad():
-        stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv3')
+        stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv3', mode=mode)
     if act_quant:
-        x = FakeQuantOp.apply(x, num_bits, stats['conv3']['ema_min'], stats['conv3']['ema_max'], sym)
+        x = apply_quant(x, 'conv3', mode=mode)
 
     # -------- Layer 4 --------
     weight = FakeQuantOp.apply(model.conv4.weight, num_bits, None, None, sym)
@@ -480,9 +569,9 @@ def quantAwareTrainingForward(model, x, stats, vis=False, axs=None, sym=False, n
     x = F.relu(x)
     x = model.bn4(x)
     with torch.no_grad():
-        stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv4')
+        stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv4', mode=mode)
     if act_quant:
-        x = FakeQuantOp.apply(x, num_bits, stats['conv4']['ema_min'], stats['conv4']['ema_max'], sym)
+        x = apply_quant(x, 'conv4', mode=mode)
 
     # -------- Layer 5 --------
     weight = FakeQuantOp.apply(model.conv5.weight, num_bits, None, None, sym)
@@ -490,9 +579,9 @@ def quantAwareTrainingForward(model, x, stats, vis=False, axs=None, sym=False, n
     x = F.relu(x)
     x = model.bn5(x)
     with torch.no_grad():
-        stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv5')
+        stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv5', mode=mode)
     if act_quant:
-        x = FakeQuantOp.apply(x, num_bits, stats['conv5']['ema_min'], stats['conv5']['ema_max'], sym)
+        x = apply_quant(x, 'conv5', mode=mode)
 
     # -------- Pooling + Flatten --------
     x = F.max_pool2d(x, 3, 2)
@@ -506,29 +595,28 @@ def quantAwareTrainingForward(model, x, stats, vis=False, axs=None, sym=False, n
     x = F.relu(x)
     x = model.dropout(x)
     with torch.no_grad():
-        stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'fc1')
+        stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'fc1', mode=mode)
     if act_quant:
-        x = FakeQuantOp.apply(x, num_bits, stats['fc1']['ema_min'], stats['fc1']['ema_max'], sym)
+        x = apply_quant(x, 'fc1', mode=mode)
 
     # -------- FC2 --------
     weight = FakeQuantOp.apply(model.fc2.weight, num_bits, None, None, sym)
     x = F.linear(x, weight, model.fc2.bias)
     x = F.relu(x)
     with torch.no_grad():
-        stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'fc2')
+        stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'fc2', mode=mode)
     if act_quant:
-        x = FakeQuantOp.apply(x, num_bits, stats['fc2']['ema_min'], stats['fc2']['ema_max'], sym)
+        x = apply_quant(x, 'fc2', mode=mode)
 
     # -------- FC3 (Output Layer) --------
     weight = FakeQuantOp.apply(model.fc3.weight, num_bits, None, None, sym)
     x = F.linear(x, weight, model.fc3.bias)
     with torch.no_grad():
-        stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'fc3')
+        stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'fc3', mode=mode)
     if act_quant:
-        x = FakeQuantOp.apply(x, num_bits, stats['fc3']['ema_min'], stats['fc3']['ema_max'], sym)
+        x = apply_quant(x, 'fc3', mode=mode)
 
     return x, stats
-
 
 
 
@@ -541,18 +629,20 @@ def test_model(args, model, device, test_loader):
     test_loss = 0
     correct = 0
     with torch.no_grad():
-        for data, target in test_loader:
+        for i, (data, target) in enumerate(test_loader):
             data, target = data.to(device), target.to(device)
             output = model(data)
             test_loss += F.cross_entropy(output, target, reduction='sum').item()
             pred = output.argmax(dim=1, keepdim=True)
             correct += pred.eq(target.view_as(pred)).sum().item()
+            
+            print("testing idx:", i, end='\r')
 
     test_loss = test_loss/len(test_loader.dataset)
 
     accuracy = 100. * correct / len(test_loader.dataset)
 
-    print('\nTest set: Average loss: {:.4f}, Accuracy: {:.0f}%  ({}/{})  lr: {} \n'.format(
+    print('Test set: Average loss: {:.4f}, Accuracy: {:.0f}%  ({}/{})  lr: {} '.format(
         test_loss, accuracy, correct, len(test_loader.dataset), lr ))
 
     return test_loss, accuracy
@@ -595,6 +685,37 @@ def load_datasets():
     return trainset, train_loader, testset, test_loader
 
 
+# calculate real sparsity of  model previously quantized and saved 
+def calculate_pruned_sparsity(model, verbose=True):
+    total_zeros = 0
+    total_elements = 0
+
+    for name, param in model.named_parameters():
+        if 'weight' in name and param.requires_grad:
+            num_zeros = torch.sum(param == 0).item()
+            num_elements = param.numel()
+            total_zeros += num_zeros
+            total_elements += num_elements
+            if verbose:
+                print(f"{name}: sparsity = {100.0 * num_zeros / num_elements:.2f}%")
+
+    global_sparsity = 100.0 * total_zeros / total_elements
+    print(f" (*) Global sparsity: {global_sparsity:.2f}%")
+    return global_sparsity
+
+
+# reapply pruning mask to loaded model 
+def mask_frozen_weights(model):
+    for name, module in model.named_modules():
+        if isinstance(module, (nn.Conv2d, nn.Linear)):
+            # Only apply mask to weights that exist and are trainable
+            if hasattr(module, 'weight') and module.weight is not None:
+                # Build binary mask: 1 where weight != 0, 0 where weight == 0
+                weight_mask = (module.weight != 0).to(dtype=torch.float32)
+
+                # Apply custom mask (prune)
+                prune.custom_from_mask(module, name='weight', mask=weight_mask)
+    return model
 
 # ************************************   plot  ************************************ 
 
@@ -765,7 +886,7 @@ if __name__ == "__main__":
     save_model = cfg.save_model
     no_cuda = cfg.no_cuda
     dataset_root = cfg.dataset_root
-    start_QAT_epoch = cfg.start_QAT_epoch
+    activation_QAT_start = cfg.activation_QAT_start
     num_bits = cfg.num_bits
     symmetrical = cfg.symmetrical
     models_path = cfg.models_path
@@ -775,6 +896,10 @@ if __name__ == "__main__":
     final_sparsity = cfg.final_sparsity
     lr_step_size = cfg.lr_step_size
     lr_gamma = cfg.lr_gamma
+    prune_after_epoch = cfg.prune_after_epoch
+    percentile = cfg.percentile
+    lasso_lambda = cfg.lasso_lambda
+    stats_mode = cfg.stats_mode
 
    
 
@@ -805,13 +930,20 @@ if __name__ == "__main__":
         device = torch.device("cuda" if use_cuda else "cpu")
         model = AlexNet()
         model=load_model(args.load,model)
+        # set the model in evauation mode
+        model.eval()
         
-        # load_sparse_model(file,model) you need to instance alexnet separately. 
+        # calculate sparsity of loaded model 
+        print("loading the model and checking that the sparsity is correct...")
+        calculate_pruned_sparsity(model)
+        
+        # apply the pruning mask to match the current sparsity. 
+        model = mask_frozen_weights(model)
         model.to(cfg.device)
         print(f"Model {args.load} loaded.")
-        # decrease the learning rate, because the model is already trained.
-        # this is to avoind to change the trianing rate manually. 
-        lr = lr * 0.5
+        
+        # loaded models are usually already trained. decrease the learning rate.
+        lr = lr * 0.1
     else:
         model = None
 
@@ -856,4 +988,19 @@ if __name__ == "__main__":
 
 
 
+
+
+
+        
+    # printing a beginning of computation log 
+    if args.test is None:
+        print("**********************************")
+        print(f"Starting training. qat: {args.qat} bit: {num_bits} pruning: {pruning} final_sparsity: {final_sparsity} ")
+        print("**********************************")
+    else:
+        print("**********************************")
+        print("Testing a model: ", args.test)
+        print("**********************************")
+
+	
 

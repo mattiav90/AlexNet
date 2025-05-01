@@ -7,23 +7,27 @@ class cfg:
     test_batch_size = 128
 
     input_size = 224
-    epochs = 1
-    lr = 0.01
+    epochs = 3              # number of epochs
+    lr = 0.01               # do not use bigger than 0.01
     momentum = 0.9
     seed = 1
-    lr_step_size = 2
-    lr_gamma = 0.5
+    lr_step_size = 2        # step size for learning rate decay
+    lr_gamma = 0.5          # learning rate decay
+    lasso_lambda = 1e-5     # weight regularization
 
     # QAT cfg
-    start_QAT_epoch = 0
+    activation_QAT_start = 0
     num_bits = 8
     symmetrical = True
+    stats_mode = "entropy"  # minmax or entropy
 
     # pruning
-    pruning = True
-    pruning_every = 1
-    pruning_ratio = 0.1
-    final_sparsity = 50
+    pruning = False
+    pruning_every = 2
+    pruning_ratio = 0.1     #prune a fixed pruning ratio
+    final_sparsity = 0
+    prune_after_epoch = 0   # start pruning after this epoch
+    percentile = 10         # drop the lowest percentile of weights
 
     # log config
     log_interval = 40

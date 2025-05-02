@@ -16,13 +16,13 @@ class cfg:
     lasso_lambda = 1e-5     # weight regularization
 
     # QAT cfg
-    activation_QAT_start = 1
+    activation_QAT_start = 0
     num_bits = 2
     symmetrical = False
     stats_mode = "entropy"  # minmax or entropy
 
     # pruning
-    pruning = True
+    pruning = False
     pruning_every = 1
     pruning_ratio = 0.1     #prune a fixed pruning ratio
     final_sparsity = 90

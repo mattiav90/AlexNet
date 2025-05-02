@@ -360,19 +360,15 @@ def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name,sy
         scheduler.step(loss_temp[-1])
 
 
-
-        
         if pruning and ( epoch%prune_every==0 or epoch>=prune_after_epoch ):
             print("pruning at epoch: ",epoch)
             apply_pruning(model,prune_amount)
             reset_optimizer_state(optimizer, model)
 
-            
             current_sparsity = calculate_pruned_sparsity(model)
             if current_sparsity >= cfg.final_sparsity:
                 pruning=False
                 print(f"sparsity ({current_sparsity}) reached final: {cfg.final_sparsity}. stopping pruning.")
-
 
         # sparsity calcualation
         current_sparsity = calculate_pruned_sparsity(model,verbose=False)
@@ -386,7 +382,6 @@ def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name,sy
         fool=False
     else: 
         last_sparsity=0
-    
 
     return model, stats, loss_acc
 
@@ -927,10 +922,10 @@ if __name__ == "__main__":
         
         # calculate sparsity of loaded model 
         print("loading the model and checking that the sparsity is correct...")
-        calculate_pruned_sparsity(model)
-        
-        # apply the pruning mask to match the current sparsity. 
         model = mask_frozen_weights(model)
+        calculate_pruned_sparsity(model)
+        # apply the pruning mask to match the current sparsity. 
+        
         model.to(cfg.device)
         print(f"Model {args.load} loaded.")
         

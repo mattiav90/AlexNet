@@ -11,12 +11,10 @@ from config import cfg
 from quantizer import *
 import matplotlib.pyplot as plt
 import numpy as np
-
 import torch.nn.utils.prune as prune
 import os
 import math
 import pandas as pd
-
 import gc
 
 
@@ -80,7 +78,7 @@ class AlexNet(nn.Module):
 
 # ************************************  pruning  ************************************ 
 
-
+# apply pruning. 
 def apply_pruning(model, amount):
     for name, module in model.named_modules():
         if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
@@ -88,13 +86,14 @@ def apply_pruning(model, amount):
             prune.l1_unstructured(module, name='weight', amount=amount)
 
 
+# calcualted pruning sparsity 
 def calculate_pruned_sparsity(model, verbose=True):
     total_zeros = 0
     total_elements = 0
     found_mask = False
 
     if verbose:
-        print("Layer-wise sparsity:")
+        print("Layer-wise sparsity (via mask):")
 
     for name, module in model.named_modules():
         if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
@@ -102,9 +101,8 @@ def calculate_pruned_sparsity(model, verbose=True):
                 mask = module.weight_mask
                 num_elements = mask.numel()
                 num_zeros = (mask == 0).sum().item()
-                
-                total_zeros += num_zeros
                 total_elements += num_elements
+                total_zeros += num_zeros
                 found_mask = True
 
                 if verbose:
@@ -119,10 +117,13 @@ def calculate_pruned_sparsity(model, verbose=True):
     overall_sparsity = 100.0 * total_zeros / total_elements
     if verbose:
         print(f"(*) Overall sparsity: {overall_sparsity:.2f}%")
+
     return round(overall_sparsity, 2)
 
 
 
+
+# permanently apply the pruning mask 
 def apply_pruning_mask(model):
     for name, module in model.named_modules():
         if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
@@ -195,6 +196,14 @@ def main_train_fp(trainset,train_loader,testset,test_loader,pruning,early_stoppi
         if pruning and ( epoch % prune_every==0 ) : 
             print("pruning at epoch: ",epoch)
             apply_pruning(model,prune_amount)
+            
+            
+            # comment ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            for name, module in model.named_modules():
+                if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
+                    if hasattr(module, 'weight_mask'):
+                        print(f"{name} pruning mask applied: {module.weight_mask.shape}")
+            # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
             
             current_sparsity = calculate_pruned_sparsity(model)
             if current_sparsity >= cfg.final_sparsity:
@@ -355,7 +364,7 @@ def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name,sy
         
         if pruning and ( epoch%prune_every==0 or epoch>=prune_after_epoch ):
             print("pruning at epoch: ",epoch)
-            apply_pruning(model,percentile=percentile)
+            apply_pruning(model,prune_amount)
             reset_optimizer_state(optimizer, model)
 
             
@@ -685,23 +694,6 @@ def load_datasets():
     return trainset, train_loader, testset, test_loader
 
 
-# calculate real sparsity of  model previously quantized and saved 
-def calculate_pruned_sparsity(model, verbose=True):
-    total_zeros = 0
-    total_elements = 0
-
-    for name, param in model.named_parameters():
-        if 'weight' in name and param.requires_grad:
-            num_zeros = torch.sum(param == 0).item()
-            num_elements = param.numel()
-            total_zeros += num_zeros
-            total_elements += num_elements
-            if verbose:
-                print(f"{name}: sparsity = {100.0 * num_zeros / num_elements:.2f}%")
-
-    global_sparsity = 100.0 * total_zeros / total_elements
-    print(f" (*) Global sparsity: {global_sparsity:.2f}%")
-    return global_sparsity
 
 
 # reapply pruning mask to loaded model 

@@ -7,7 +7,7 @@ class cfg:
     test_batch_size = 128
 
     input_size = 224
-    epochs = 4              # number of epochs
+    epochs = 10              # number of epochs
     lr = 0.01               # do not use bigger than 0.01
     momentum = 0.9
     seed = 1
@@ -16,7 +16,7 @@ class cfg:
     lasso_lambda = 1e-5     # weight regularization
 
     # QAT cfg
-    activation_QAT_start = 0
+    activation_QAT_start = 20
     num_bits = 2
     symmetrical = False
     stats_mode = "entropy"  # minmax or entropy

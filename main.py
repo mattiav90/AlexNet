@@ -123,8 +123,45 @@ def calculate_pruned_sparsity(model, verbose=True):
 
 
 
+# just calculate the weigghts sparsity, do not apply the mask
+def calculate_weight_sparsity(model, verbose=True):
+    total_zeros = 0
+    total_elements = 0
+    found_weights = False
+    
+    print("Layer-wise sparsity (counting zero weights):")
+
+    for name, module in model.named_modules():
+        if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
+            if hasattr(module, 'weight'):
+                weight = module.weight.data
+                num_elements = weight.numel()
+                num_zeros = (weight == 0).sum().item()
+                total_elements += num_elements
+                total_zeros += num_zeros
+                found_weights = True
+
+                if verbose:
+                    sparsity = 100.0 * num_zeros / num_elements
+                    print(f"{name}: {sparsity:.2f}% sparsity")
+
+    if not found_weights:
+        if verbose:
+            print("No weights found. Returning 0% sparsity.")
+        return 0.0
+
+    overall_sparsity = 100.0 * total_zeros / total_elements
+    if verbose:
+        print(f"(*) Overall sparsity: {overall_sparsity:.2f}%")
+
+    return round(overall_sparsity, 2)
+
+
+
+
 # permanently apply the pruning mask 
 def apply_pruning_mask(model):
+    print("removing the pruning mask. inside function log.")
     for name, module in model.named_modules():
         if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
             prune.remove(module, 'weight')
@@ -139,6 +176,18 @@ def reset_optimizer_state(optimizer, model):
                 state['momentum_buffer'].zero_()
 
 
+
+def make_pruning_permanent(model):
+    print("Making pruning permanent (zeroed weights, no mask).")
+    for name, module in model.named_modules():
+        if isinstance(module, (nn.Conv2d, nn.Linear)):
+            if hasattr(module, 'weight_mask') and hasattr(module, 'weight_orig'):
+                # Force mask application: in-place
+                with torch.no_grad():
+                    module.weight_orig *= module.weight_mask
+
+                # Now remove pruning (will copy masked weight into .weight)
+                prune.remove(module, 'weight')
 
 
 
@@ -295,15 +344,53 @@ def train(args, model, device, train_loader, optimizer, epoch, test_loader,early
 
 
 # Save model weights
-def save_model_func(model, file_name):
-    if not file_name.endswith('.pt'):
-        file_name += '.pt'
-    torch.save(model.state_dict(), file_name)
+def save_model_func(model, file_name, qat, stats=None):
+
+    # set the model in evaluation mode before saving it. otherwise you save values meant for training and not inference 
+    # During train(): BatchNorm uses batch stats; FakeQuantize updates its observer stats.
+    # During eval(): BatchNorm uses stored running stats; FakeQuantize uses frozen quantization ranges.
+    model.eval()
+    model.apply(torch.quantization.disable_observer)
+    # apply_pruning_mask(model)
+    make_pruning_permanent(model)
+        
+    if qat:   
+        if not file_name.endswith('.pth'):
+            file_name += '.pth'
+            
+        print("Saving the model with this stats: ",stats )
+        torch.save({
+        'model_state_dict': model.state_dict(),
+        'stats': stats
+        },file_name )
+    
+    else:
+
+        
+        if not file_name.endswith('.pt'):
+            file_name += '.pt'
+        
+        # set the model in evaluation mode before saving it. otherwise you save values meant for training and not inference 
+        torch.save(model.state_dict(), file_name)
+    
+    
+    
+def apply_dummy_pruning(model):
+    # Apply dummy pruning to match saved state_dict keys
+    for module in model.modules():
+        if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
+            prune.identity(module, 'weight')  # adds `weight_orig` and `weight_mask`
+
 
 # Load model weights
 def load_model(file_name, model):
-    state_dict = torch.load(file_name, map_location='cpu')
-    model.load_state_dict(state_dict)
+    try:
+        state_dict = torch.load(file_name, map_location='cpu')
+        model.load_state_dict(state_dict)
+    except:
+        apply_dummy_pruning(model)
+        state_dict = torch.load(file_name, map_location='cpu')
+        model.load_state_dict(state_dict)
     return model
 
 
@@ -373,7 +460,13 @@ def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name,sy
         # sparsity calcualation
         current_sparsity = calculate_pruned_sparsity(model,verbose=False)
         print(f"Current sparsity: {current_sparsity:.2f}")
-    
+
+
+        # print("\ncalculating one last time the accuracy....\n")
+        # loss_temp, accuracy_temp = testQuantAware(
+        #                 args, model, device, test_loader, stats,
+        #                 act_quant=argom.qat, num_bits=num_bits, sym=symmetrical, is_test=True )
+        
     # remove pruning wrappers.
     if fool:
         last_sparsity = calculate_pruned_sparsity(model)
@@ -499,7 +592,7 @@ def testQuantAware(args, model, device, test_loader, stats, act_quant, num_bits=
     test_loss /= len(test_loader.dataset)
     accuracy = 100. * correct / len(test_loader.dataset)
 
-    print('Test set: Average loss: {:.4f}, Accuracy: {:.0f}%  ({}/{})  lr: {} '.format(
+    print('Test set (QAT): Average loss: {:.4f}, Accuracy: {:.0f}%  ({}/{})  lr: {} '.format(
         test_loss, accuracy, correct, len(test_loader.dataset), lr ))
     
     return [test_loss, accuracy]
@@ -526,9 +619,11 @@ def quantAwareTrainingForward(model, x, stats, vis=False, axs=None, sym=False, n
             )
         elif mode=="entropy":
             # print("passing entropy. min= ",stats[name]['entropy_min_val']," max: ",stats[name]['entropy_max_val'])
+            bits_effective = activation_bit if activation_bit is not None else num_bits
+            # print("quantizing with bits_effective: ",bits_effective)
             return FakeQuantOp.apply(
                 tensor,
-                num_bits,
+                bits_effective,
                 stats[name]['entropy_min_val'],
                 stats[name]['entropy_max_val'],
                 sym
@@ -846,6 +941,51 @@ def compute_name(qat,bits,pruning,sparsity,loss_acc):
     
     return name,title,path
 
+
+
+
+# ************************************   quantized inference  ************************************ 
+
+
+
+def quantized_inference(model, x, stats, sym=False, num_bits=8):
+    model.eval()
+    x = x.to('cpu')
+    
+    scale_x, zp_x = calcScaleZeroPoint(x.min(), x.max(), num_bits)
+
+    x, scale_next, zp_next = quantizeLayer(x, model.conv1, stats['conv1'], scale_x, zp_x, sym=sym, num_bits=num_bits)
+    x = model.Maxpool(x)
+    x = model.bn1(x)
+
+    x, scale_next, zp_next = quantizeLayer(x, model.conv2, stats['conv2'], scale_next, zp_next, sym=sym, num_bits=num_bits)
+    x = model.Maxpool(x)
+    x = model.bn2(x)
+
+    x, scale_next, zp_next = quantizeLayer(x, model.conv3, stats['conv3'], scale_next, zp_next, sym=sym, num_bits=num_bits)
+    x = model.bn3(x)
+
+    x, scale_next, zp_next = quantizeLayer(x, model.conv4, stats['conv4'], scale_next, zp_next, sym=sym, num_bits=num_bits)
+    x = model.bn4(x)
+
+    x, scale_next, zp_next = quantizeLayer(x, model.conv5, stats['conv5'], scale_next, zp_next, sym=sym, num_bits=num_bits)
+    x = model.bn5(x)
+    x = model.Maxpool(x)
+
+    x = model.avgpool(x)
+    x = torch.flatten(x, 1)
+
+    x = model.dropout(x)
+
+    x, scale_next, zp_next = quantizeLayer(x, model.fc1, stats['fc1'], scale_next, zp_next, sym=sym, num_bits=num_bits)
+    x = model.dropout(x)
+    x, scale_next, zp_next = quantizeLayer(x, model.fc2, stats['fc2'], scale_next, zp_next, sym=sym, num_bits=num_bits)
+    x, _, _ = quantizeLayer(x, model.fc3, stats['fc3'], scale_next, zp_next, sym=sym, num_bits=num_bits)
+
+    return x
+
+
+
 # ************************************   main  ************************************ 
 
 
@@ -858,8 +998,9 @@ if __name__ == "__main__":
     parser.add_argument("--bit",type=int , help="quantization bits" )
     parser.add_argument("--es",type=int,help="early stopping")
     parser.add_argument("--load",type=str,help="load an already trained model")
+    argom = parser.parse_args()
 
-    args = parser.parse_args()
+
 
     # configuration file. hyperparameters
     batch_size=cfg.batch_size
@@ -884,26 +1025,31 @@ if __name__ == "__main__":
     lr_step_size = cfg.lr_step_size
     lr_gamma = cfg.lr_gamma
     prune_after_epoch = cfg.prune_after_epoch
-    percentile = cfg.percentile
     lasso_lambda = cfg.lasso_lambda
     stats_mode = cfg.stats_mode
+    activation_bit = cfg.activation_bit
+    
+    
+    if activation_bit is not None:
+        print(" (!) I am forcing activation quantization to be: ",activation_bit)
+    
 
    
 
     # overwriting the qauntization in the config file  
-    if args.bit is not None:
-        num_bits=args.bit
+    if argom.bit is not None:
+        num_bits=argom.bit
         print(f"quantizing with {num_bits}")
     
     
     # printing a beginning of computation log 
-    if args.test is None:
+    if argom.test is None:
         print("**********************************")
-        print(f"Starting training. qat: {args.qat} bit: {num_bits} pruning: {pruning} final_sparsity: {final_sparsity} ")
+        print(f"Starting training. qat: {argom.qat} bit: {num_bits} pruning: {pruning} final_sparsity: {final_sparsity} ")
         print("**********************************")
     else:
         print("**********************************")
-        print("Testing a model: ", args.test)
+        print("Testing a model: ", argom.test)
         print("**********************************")
 
 	
@@ -912,11 +1058,11 @@ if __name__ == "__main__":
     trainset,train_loader,testset,test_loader = load_datasets()
     
     # load a an already trained model. to train more.
-    if args.load is not None:
+    if argom.load is not None:
         use_cuda = not no_cuda and torch.cuda.is_available()
         device = torch.device("cuda" if use_cuda else "cpu")
         model = AlexNet()
-        model=load_model(args.load,model)
+        model=load_model(argom.load,model)
         # set the model in evauation mode
         model.eval()
         
@@ -927,51 +1073,123 @@ if __name__ == "__main__":
         # apply the pruning mask to match the current sparsity. 
         
         model.to(cfg.device)
-        print(f"Model {args.load} loaded.")
+        print(f"Model {argom.load} loaded.")
         
         # loaded models are usually already trained. decrease the learning rate.
-        lr = lr * 0.1
+        lr = lr * 0.5
     else:
         model = None
 
 
     # testing a pre-trained model
-    if args.test:
+    if argom.test:
         # create instalce of the model structure
         use_cuda = not no_cuda and torch.cuda.is_available()
         device = torch.device("cuda" if use_cuda else "cpu")
         model = AlexNet()
-        model=load_model(args.test,model)
+        
+        
+        
+        # qat model testing
+        if argom.qat:
+            print("testing qat.")
+            
+            # apply the pruning wrapper, without adding sparsity.
+            # apply_dummy_pruning(model)
+            checkpoint = torch.load(argom.test, map_location=device)
+            model.load_state_dict( checkpoint['model_state_dict'] )  # Correct key
+            stats = checkpoint['stats']
+            
+            # masking the previous sparsity
+            # model = mask_frozen_weights(model)
+            # calculate_pruned_sparsity(model)
+            
+            print("loaded this stats from the model: ",stats,"\n\n")
 
-        # model = torch.load(args.test, map_location=cfg.device)
-        model.to(cfg.device)
-        args_dict = {"log_interval": cfg.log_interval}
-        test_model(args_dict, model, cfg.device, test_loader)
+            model.to(device)
+            model.eval()
+            
+            
+            
+            # Evaluate using quantized inference
+            all_preds = []
+            all_labels = []
+
+            with torch.no_grad():
+                for a,(data, target) in enumerate(test_loader):
+                    data = data.to(device)
+                    target = target.to(device)
+                    
+                    
+                    print("testing img: ",a , end='\r')
+                    # Run quantized inference on the input batch
+                    output = quantized_inference(model, data, stats, sym=symmetrical, num_bits=num_bits)
+
+                    # Get predicted labels
+                    pred = output.argmax(dim=1, keepdim=False)
+
+                    # Store results
+                    all_preds.append(pred.cpu())
+                    all_labels.append(target.cpu())
+
+            # Combine all predictions and targets
+            all_preds = torch.cat(all_preds)
+            all_labels = torch.cat(all_labels)
+
+            # Compute accuracy
+            accuracy = (all_preds == all_labels).float().mean().item()
+            print(f"\nQuantized inference accuracy: {accuracy * 100:.2f}%")
+
+            # for name, param in model.named_parameters():
+            #     print(f"Layer: {name} | Shape: {param.shape} | Weights:\n{param.data}\n")
+
+
+            # args={}
+            # args["log_interval"] = log_interval
+            # # Run testing
+            # loss_temp, accuracy_temp = testQuantAware(
+            #     args, model, device, test_loader, stats,
+            #     act_quant=argom.qat, num_bits=num_bits, sym=symmetrical, is_test=True )
+
+        # fp model testing 
+        else:
+            print("testing fp precision")
+            model=load_model(argom.test,model)
+            model.to(cfg.device)
+            calculate_weight_sparsity(model)
+            args_dict = {"log_interval": cfg.log_interval}
+            test_model(args_dict, model, cfg.device, test_loader)
 
     
     # train unquantized model
     else:
         # train fp model
-        if not args.qat:
-            model, loss_acc, final_sparsity = main_train_fp(trainset,train_loader,testset,test_loader,pruning,args.es,model=model)
+        if not argom.qat:
+            model, loss_acc, final_sparsity = main_train_fp(trainset,train_loader,testset,test_loader,pruning,argom.es,model=model)
             print("the final sparsity is: ", final_sparsity)
         
         # train with QAT
-        elif args.qat:
-            model, stats, loss_acc = main_QuantAwareTrain(trainset,train_loader,testset,test_loader,args.out,symmetrical,pruning,args.es,model=model)
+        elif argom.qat:
+            model, stats, loss_acc = main_QuantAwareTrain(trainset,train_loader,testset,test_loader,argom.out,symmetrical,pruning,argom.es,model=model)
 
 
 
         # generate plot and model name
-        name,title,path = compute_name(args.qat,num_bits,pruning,final_sparsity,loss_acc)
+        name,title,path = compute_name(argom.qat,num_bits,pruning,final_sparsity,loss_acc)
 
         # plot
-        plot_loss_accuracy(loss_acc, args.qat, pruning,final_sparsity, num_bits, title=title, save_path=path)
+        plot_loss_accuracy(loss_acc, argom.qat, pruning,final_sparsity, num_bits, title=title, save_path=path)
 
         # save the model in compressed format. 
         if save_model:
             print("saving model...")
-            save_model_func(model,path)
+            if argom.qat:
+                print("save model qat")
+                save_model_func(model,path,True,stats=stats)
+            else:
+                print("save model fp")
+                save_model_func(model,path,False)
+
 
 
 
@@ -980,14 +1198,9 @@ if __name__ == "__main__":
 
         
     # printing a beginning of computation log 
-    if args.test is None:
-        print("**********************************")
-        print(f"Starting training. qat: {args.qat} bit: {num_bits} pruning: {pruning} final_sparsity: {final_sparsity} ")
-        print("**********************************")
-    else:
-        print("**********************************")
-        print("Testing a model: ", args.test)
-        print("**********************************")
-
+    if argom.test is None:
+        print("****************************************************************")
+        print(f"Starting training. qat: {argom.qat} bit: {num_bits} pruning: {pruning} final_sparsity: {final_sparsity} ")
+        print("****************************************************************")
 	
 

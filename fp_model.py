@@ -4,6 +4,8 @@ import torch.optim as optim
 import torch.nn.functional as F
 import torch.nn as nn
 
+from pruning import *
+
 # ************************************************************************************************************
 # ************************************************************************************************************
 # ************************************************************************************************************
@@ -220,57 +222,3 @@ def test_model(args, model, device, test_loader):
     return test_loss, accuracy
     
 
-
-
-
-
-
-
-# this I can eventually remove from here 
-
-def calculate_pruned_sparsity(model, verbose=True):
-    total_zeros = 0
-    total_elements = 0
-    found_mask = False
-
-    if verbose:
-        print("Layer-wise sparsity (via mask):")
-
-    for name, module in model.named_modules():
-        if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
-            if hasattr(module, 'weight_mask'):
-                mask = module.weight_mask
-                num_elements = mask.numel()
-                num_zeros = (mask == 0).sum().item()
-                total_elements += num_elements
-                total_zeros += num_zeros
-                found_mask = True
-
-                if verbose:
-                    sparsity = 100.0 * num_zeros / num_elements
-                    print(f"{name}: {sparsity:.2f}% sparsity")
-
-    if not found_mask:
-        if verbose:
-            print("No pruning masks found. Returning 0% sparsity.")
-        return 0.0
-
-    overall_sparsity = 100.0 * total_zeros / total_elements
-    if verbose:
-        print(f"(*) Overall sparsity: {overall_sparsity:.2f}%")
-
-    return round(overall_sparsity, 2)
-
-
-
-def make_pruning_permanent(model):
-    print("Making pruning permanent (zeroed weights, no mask).")
-    for name, module in model.named_modules():
-        if isinstance(module, (nn.Conv2d, nn.Linear)):
-            if hasattr(module, 'weight_mask') and hasattr(module, 'weight_orig'):
-                # Force mask application: in-place
-                with torch.no_grad():
-                    module.weight_orig *= module.weight_mask
-
-                # Now remove pruning (will copy masked weight into .weight)
-                prune.remove(module, 'weight')

@@ -130,3 +130,18 @@ def apply_dummy_pruning(model):
 
 
 
+
+
+
+# reapply pruning mask to loaded model 
+def mask_frozen_weights(model):
+    for name, module in model.named_modules():
+        if isinstance(module, (nn.Conv2d, nn.Linear)):
+            # Only apply mask to weights that exist and are trainable
+            if hasattr(module, 'weight') and module.weight is not None:
+                # Build binary mask: 1 where weight != 0, 0 where weight == 0
+                weight_mask = (module.weight != 0).to(dtype=torch.float32)
+
+                # Apply custom mask (prune)
+                prune.custom_from_mask(module, name='weight', mask=weight_mask)
+    return model

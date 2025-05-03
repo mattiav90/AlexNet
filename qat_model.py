@@ -326,3 +326,44 @@ def quantAwareTrainingForward(model, x, stats, vis=False, axs=None, sym=False, n
 
 
 
+
+
+
+# ************************************   quantized inference  ************************************ 
+
+def quantized_inference(model, x, stats, sym=False, num_bits=8):
+    model.eval()
+    x = x.to('cpu')
+    
+    scale_x, zp_x = calcScaleZeroPoint(x.min(), x.max(), num_bits)
+
+    x, scale_next, zp_next = quantizeLayer(x, model.conv1, stats['conv1'], scale_x, zp_x, sym=sym, num_bits=num_bits)
+    x = model.Maxpool(x)
+    x = model.bn1(x)
+
+    x, scale_next, zp_next = quantizeLayer(x, model.conv2, stats['conv2'], scale_next, zp_next, sym=sym, num_bits=num_bits)
+    x = model.Maxpool(x)
+    x = model.bn2(x)
+
+    x, scale_next, zp_next = quantizeLayer(x, model.conv3, stats['conv3'], scale_next, zp_next, sym=sym, num_bits=num_bits)
+    x = model.bn3(x)
+
+    x, scale_next, zp_next = quantizeLayer(x, model.conv4, stats['conv4'], scale_next, zp_next, sym=sym, num_bits=num_bits)
+    x = model.bn4(x)
+
+    x, scale_next, zp_next = quantizeLayer(x, model.conv5, stats['conv5'], scale_next, zp_next, sym=sym, num_bits=num_bits)
+    x = model.bn5(x)
+    x = model.Maxpool(x)
+
+    x = model.avgpool(x)
+    x = torch.flatten(x, 1)
+
+    x = model.dropout(x)
+
+    x, scale_next, zp_next = quantizeLayer(x, model.fc1, stats['fc1'], scale_next, zp_next, sym=sym, num_bits=num_bits)
+    x = model.dropout(x)
+    x, scale_next, zp_next = quantizeLayer(x, model.fc2, stats['fc2'], scale_next, zp_next, sym=sym, num_bits=num_bits)
+    x, _, _ = quantizeLayer(x, model.fc3, stats['fc3'], scale_next, zp_next, sym=sym, num_bits=num_bits)
+
+    return x
+

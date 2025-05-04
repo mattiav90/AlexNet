@@ -152,37 +152,6 @@ def train(args, model, device, train_loader, optimizer, epoch, test_loader,early
 
 
 
-# Save fp model 
-def save_model_func(model, file_name, qat, stats=None):
-
-    # set the model in evaluation mode before saving it. otherwise you save values meant for training and not inference 
-    # During train(): BatchNorm uses batch stats; FakeQuantize updates its observer stats.
-    # During eval(): BatchNorm uses stored running stats; FakeQuantize uses frozen quantization ranges.
-    model.eval()
-    model.apply(torch.quantization.disable_observer)
-    # apply_pruning_mask(model)
-    make_pruning_permanent(model)
-        
-    if qat:   
-        if not file_name.endswith('.pth'):
-            file_name += '.pth'
-            
-        print("Saving the model with this stats: ",stats )
-        torch.save({
-        'model_state_dict': model.state_dict(),
-        'stats': stats
-        },file_name )
-    
-    else:
-
-        
-        if not file_name.endswith('.pt'):
-            file_name += '.pt'
-        
-        # set the model in evaluation mode before saving it. otherwise you save values meant for training and not inference 
-        torch.save(model.state_dict(), file_name)
-    
-    
 
 # Load model weights
 def load_model(file_name, model):

@@ -4,9 +4,6 @@ from collections import namedtuple
 
 QTensor = namedtuple('QTensor', ['tensor', 'scale', 'zero_point'])
 
-def visualise(x, axs):
-    x = x.view(-1).cpu().numpy()
-    axs.hist(x)
 
 def calcScaleZeroPoint(min_val, max_val, num_bits=8):
     # Calc Scale and zero point of next
@@ -28,17 +25,6 @@ def calcScaleZeroPoint(min_val, max_val, num_bits=8):
     zero_point = int(zero_point)
 
     return scale, zero_point
-
-
-def calcScaleZeroPointSym(min_val, max_val, num_bits=8):
-    # Calc Scale
-    max_val = max(abs(min_val), abs(max_val))
-    qmin = 0.
-    qmax = 2. ** (num_bits - 1) - 1.
-
-    scale = max_val / qmax
-
-    return scale, 0
 
 
 
@@ -76,30 +62,6 @@ def dequantize_tensor(q_x):
     # print("dequantize_tensor. zxero_point: ", q_x.zero_point)
     return q_x.scale * (q_x.tensor.float() - q_x.zero_point)
 
-
-
-
-def quantize_tensor_sym(x, num_bits=8, min_val=None, max_val=None):
-    if not min_val and not max_val:
-        min_val, max_val = x.min(), x.max()
-
-    max_val = max(abs(min_val), abs(max_val))
-    qmin = 0.
-    qmax = 2. ** (num_bits - 1) - 1.
-
-    scale = max_val / qmax
-
-    q_x = x / scale
-
-    q_x.clamp_(-qmax, qmax).round_()
-    q_x = q_x.round()
-    return QTensor(tensor=q_x, scale=scale, zero_point=0)
-
-
-
-
-def dequantize_tensor_sym(q_x):
-    return q_x.scale * (q_x.tensor.float())
 
 
 
@@ -208,8 +170,8 @@ def updateStats(x, stats, key, mode="minmax"):
 
 
 
-# custom pytorch autograd function. 
-# custom forward and backward pass can be defined by using the @staticmethod decorator.
+# # custom pytorch autograd function. 
+# # custom forward and backward pass can be defined by using the @staticmethod decorator.
 class FakeQuantOp(torch.autograd.Function):
 
     @staticmethod
@@ -227,98 +189,6 @@ class FakeQuantOp(torch.autograd.Function):
         # Apply the straight-through estimator (STE)
         # Pass the gradient through unchanged.
         return grad_output, None, None, None, None
-
-# test
-# x = torch.tensor([1, 2, 3, 4]).float()
-# print(FakeQuantOp.apply(x))
-
-
-
-
-def quantize_tensor_sym(x, num_bits=8, min_val=None, max_val=None):
-    if not min_val and not max_val:
-        min_val, max_val = x.min(), x.max()
-
-    max_val = max(abs(min_val), abs(max_val))
-    qmin = 0.
-    qmax = 2. ** (num_bits - 1) - 1.
-
-    scale = max_val / qmax
-
-    q_x = x / scale
-
-    q_x.clamp_(-qmax, qmax).round_()
-    q_x = q_x.round()
-    return QTensor(tensor=q_x, scale=scale, zero_point=0)
-
-
-def dequantize_tensor_sym(q_x):
-    return q_x.scale * (q_x.tensor.float())
-
-
-def quantizeLayer(x, layer, stat, scale_x, zp_x, vis=False, axs=None, X=None, y=None, sym=False, num_bits=8):
-
-    W = layer.weight.data
-    B = layer.bias.data
-
-    if sym:
-        w = quantize_tensor_sym(layer.weight.data, num_bits=num_bits)
-        # print("quantized tensor w: ",w[0][0][0])
-        b = quantize_tensor_sym(layer.bias.data, num_bits=num_bits)
-        # print("quantized tensor b: ",b[0])
-    else:
-        w = quantize_tensor(layer.weight.data, num_bits=num_bits)
-        b = quantize_tensor(layer.bias.data, num_bits=num_bits)
-
-    layer.weight.data = w.tensor.float()
-    layer.bias.data = b.tensor.float()
-
-    if vis:
-        axs[X, y].set_xlabel("Visualising weights of layer: ")
-        visualise(layer.weight.data, axs[X, y])
-
-    scale_w = w.scale
-    zp_w = w.zero_point
-    scale_b = b.scale
-    zp_b = b.zero_point
-
-    if sym:
-        try:
-            scale_next, zero_point_next = calcScaleZeroPointSym(min_val=stat['entropy_min_val'], max_val=stat['entropy_max_val'])
-        except:
-            scale_next, zero_point_next = calcScaleZeroPointSym(min_val=stat['min'], max_val=stat['max'])
-    else:
-        try:
-            scale_next, zero_point_next = calcScaleZeroPoint(min_val=stat['entropy_min_val'], max_val=stat['entropy_max_val'])
-        except:
-            scale_next, zero_point_next = calcScaleZeroPoint(min_val=stat['min'], max_val=stat['max'])
-
-
-    if sym:
-        X = x.float()
-        layer.weight.data = ((scale_x * scale_w) / scale_next) * (layer.weight.data)
-        layer.bias.data = (scale_b / scale_next) * (layer.bias.data)
-    else:
-        X = x.float() - zp_x
-        layer.weight.data = ((scale_x * scale_w) / scale_next) * (layer.weight.data - zp_w)
-        layer.bias.data = (scale_b / scale_next) * (layer.bias.data + zp_b)
-
-    if sym:
-        x = (layer(X))
-    else:
-        x = (layer(X)) + zero_point_next
-
-    x.round_()
-
-
-    x = F.leaky_relu(x)
-
-    layer.weight.data = W
-    layer.bias.data = B
-
-    return x, scale_next, zero_point_next
-
-
 
 
 

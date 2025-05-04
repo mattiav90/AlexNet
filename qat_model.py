@@ -1,12 +1,12 @@
 import torch
 import torch.nn as nn
-
 import torch.optim as optim
-from quantizer import *
 from pruning import *
 import torch.nn.functional as F
 import gc
 
+# files
+from quantizer_train import *
 from config import cfg
 # ************************************  train QAT  ************************************ 
 

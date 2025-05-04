@@ -227,24 +227,47 @@ def gatherStats(model, test_loader):
     return final_stats
 
 
-class FakeQuantOp(torch.autograd.Function):
 
-    @staticmethod
-    def forward(ctx, x, num_bits=8, min_val=None, max_val=None):
-        x = quantize_tensor(x, num_bits=num_bits, min_val=min_val, max_val=max_val)
-        x = dequantize_tensor(x)
-        return x
 
-    @staticmethod
-    def backward(ctx, grad_output,  num_bits=8, min_val=None, max_val=None):
-        x = grad_output
-        x = quantize_tensor(x, num_bits=num_bits, min_val=min_val, max_val=max_val)
-        x = dequantize_tensor(x)
-        grad_output = x
-        # print("backward")
-        return grad_output, None, None, None
 
-# test
-x = torch.tensor([1, 2, 3, 4]).float()
-print(FakeQuantOp.apply(x))
+def quantized_forward(model, x, stats, num_bits=8, sym=False):
+    x = x.to('cpu')
+    model.eval()
+
+    # Conv1 -> MaxPool -> BN
+    x, scale_x, zp_x = quantizeLayer(x, model.conv1, stats["conv1"], scale_x=1.0, zp_x=0, num_bits=num_bits, sym=sym)
+    x = model.Maxpool(x)
+    x = model.bn1(x)
+
+    # Conv2 -> MaxPool -> BN
+    x, scale_x, zp_x = quantizeLayer(x, model.conv2, stats["conv2"], scale_x=scale_x, zp_x=zp_x, num_bits=num_bits, sym=sym)
+    x = model.Maxpool(x)
+    x = model.bn2(x)
+
+    # Conv3 -> BN
+    x, scale_x, zp_x = quantizeLayer(x, model.conv3, stats["conv3"], scale_x=scale_x, zp_x=zp_x, num_bits=num_bits, sym=sym)
+    x = model.bn3(x)
+
+    # Conv4 -> BN
+    x, scale_x, zp_x = quantizeLayer(x, model.conv4, stats["conv4"], scale_x=scale_x, zp_x=zp_x, num_bits=num_bits, sym=sym)
+    x = model.bn4(x)
+
+    # Conv5 -> BN -> MaxPool
+    x, scale_x, zp_x = quantizeLayer(x, model.conv5, stats["conv5"], scale_x=scale_x, zp_x=zp_x, num_bits=num_bits, sym=sym)
+    x = model.bn5(x)
+    x = model.Maxpool(x)
+
+    x = model.avgpool(x)
+    x = torch.flatten(x, 1)
+
+    # FC1 
+    x, scale_x, zp_x = quantizeLayer(x, model.fc1, stats["fc1"], scale_x=scale_x, zp_x=zp_x, num_bits=num_bits, sym=sym)
+
+    # FC2 
+    x, scale_x, zp_x = quantizeLayer(x, model.fc2, stats["fc2"], scale_x=scale_x, zp_x=zp_x, num_bits=num_bits, sym=sym)
+
+    # FC3 
+    x, scale_x, zp_x = quantizeLayer(x, model.fc3, stats["fc3"], scale_x=scale_x, zp_x=zp_x, num_bits=num_bits, sym=sym)
+
+    return x
 

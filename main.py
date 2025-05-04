@@ -7,7 +7,6 @@ from torchvision import datasets, transforms
 import argparse
 import matplotlib.pyplot as plt
 import time
-from quantizer import *
 import matplotlib.pyplot as plt
 import numpy as np
 import torch.nn.utils.prune as prune
@@ -17,9 +16,11 @@ import pandas as pd
 import gc
 
 
-
+# files
+from quantizer_test import *
 from fp_model import *
 from qat_model import *
+from quantizer_train import *
 
 
 # ************************************  model  ************************************ 
@@ -271,6 +272,40 @@ def compute_name(qat,bits,pruning,sparsity,loss_acc):
 
 
 
+# ************************************   save model  ************************************ 
+
+
+# Save fp model 
+def save_model_func(model, file_name, qat, stats=None):
+
+    # set the model in evaluation mode before saving it. otherwise you save values meant for training and not inference 
+    # During train(): BatchNorm uses batch stats; FakeQuantize updates its observer stats.
+    # During eval(): BatchNorm uses stored running stats; FakeQuantize uses frozen quantization ranges.
+    model.eval()
+    model.apply(torch.quantization.disable_observer)
+    # apply_pruning_mask(model)
+    make_pruning_permanent(model)
+        
+    # if qat:   
+    #     if not file_name.endswith('.pth'):
+    #         file_name += '.pth'
+            
+    #     print("Saving the model with this stats: ",stats )
+    #     torch.save({
+    #     'model_state_dict': model.state_dict(),
+    #     'stats': stats
+    #     },file_name )
+    
+    # else:
+
+    if not file_name.endswith('.pt'):
+        file_name += '.pt'
+    
+    # set the model in evaluation mode before saving it. otherwise you save values meant for training and not inference 
+    torch.save(model.state_dict(), file_name)
+    
+    
+
 
 
 
@@ -366,37 +401,41 @@ if __name__ == "__main__":
         lr = lr * 0.5
     else:
         model = None
+        
+        
+    
+    # model definition 
+    use_cuda = not no_cuda and torch.cuda.is_available()
+    device = torch.device("cuda" if use_cuda else "cpu")
+    model = AlexNet()
+    model.to(device)
 
 
-    # testing a pre-trained model
+
+    # ********************************************** TESTING **********************************************
     if argom.test:
-        # create instalce of the model structure
-        use_cuda = not no_cuda and torch.cuda.is_available()
-        device = torch.device("cuda" if use_cuda else "cpu")
-        model = AlexNet()
         
-        
-        
-        # qat model testing
+        # ********************************************** QAT TESTING **********************************************
         if argom.qat:
             print("testing qat.")
             
             # apply the pruning wrapper, without adding sparsity.
             # apply_dummy_pruning(model)
-            checkpoint = torch.load(argom.test, map_location=device)
-            model.load_state_dict( checkpoint['model_state_dict'] )  # Correct key
-            stats = checkpoint['stats']
+            # try:
+            #     # for pth files. 
+            #     checkpoint = torch.load(argom.test, map_location=device)
+            #     model.load_state_dict( checkpoint['model_state_dict'] )  # Correct key
+            #     stats = checkpoint['stats']
+            # except:
+            model_state_dict = torch.load(argom.test, map_location=device)
             
-            # masking the previous sparsity
-            # model = mask_frozen_weights(model)
-            # calculate_pruned_sparsity(model)
+            print("generating stats...")
+            stats = gatherStats(model,test_loader)
             
-            print("loaded this stats from the model: ",stats,"\n\n")
+            print("calcualted stats: ",stats,"\n\n")
 
             model.to(device)
             model.eval()
-            
-            
             
             # Evaluate using quantized inference
             all_preds = []
@@ -410,7 +449,7 @@ if __name__ == "__main__":
                     
                     print("testing img: ",a , end='\r')
                     # Run quantized inference on the input batch
-                    output = quantized_inference(model, data, stats, sym=symmetrical, num_bits=num_bits)
+                    output = quantized_forward(model, data, stats, sym=symmetrical, num_bits=num_bits)
 
                     # Get predicted labels
                     pred = output.argmax(dim=1, keepdim=False)
@@ -427,18 +466,8 @@ if __name__ == "__main__":
             accuracy = (all_preds == all_labels).float().mean().item()
             print(f"\nQuantized inference accuracy: {accuracy * 100:.2f}%")
 
-            # for name, param in model.named_parameters():
-            #     print(f"Layer: {name} | Shape: {param.shape} | Weights:\n{param.data}\n")
 
-
-            # args={}
-            # args["log_interval"] = log_interval
-            # # Run testing
-            # loss_temp, accuracy_temp = testQuantAware(
-            #     args, model, device, test_loader, stats,
-            #     act_quant=argom.qat, num_bits=num_bits, sym=symmetrical, is_test=True )
-
-        # fp model testing 
+        # ********************************************** FP TESTING **********************************************
         else:
             print("testing fp precision")
             model=load_model(argom.test,model)
@@ -451,24 +480,20 @@ if __name__ == "__main__":
     
     
     
-    # train model 
+    
+    # ********************************************** TRAINING **********************************************
     else:
-        use_cuda = not no_cuda and torch.cuda.is_available()
-        device = torch.device("cuda" if use_cuda else "cpu")
-        model = AlexNet()
-        model.to(device)
         model.train()
         
-        # train fp model
+    # ********************************************** TRAINING FP **********************************************
         if not argom.qat:
             model, loss_acc, final_sparsity = main_train_fp(trainset,train_loader,testset,test_loader,pruning,argom.es,model=model)
             print("the final sparsity is: ", final_sparsity)
         
-        # train with QAT
+        
+    # ********************************************** TRAINING QAT **********************************************
         elif argom.qat:
             model, stats, loss_acc = main_QuantAwareTrain(trainset,train_loader,testset,test_loader,argom.out,symmetrical,pruning,argom.es,model=model)
-
-
 
         # generate plot and model name
         name,title,path = compute_name(argom.qat,num_bits,pruning,final_sparsity,loss_acc)
@@ -476,7 +501,8 @@ if __name__ == "__main__":
         # plot
         plot_loss_accuracy(loss_acc, argom.qat, pruning,final_sparsity, num_bits, title=title, save_path=path)
 
-        # save the model in compressed format. 
+
+    # ********************************************** SAVE MODEL **********************************************
         if save_model:
             print("saving model...")
             if argom.qat:
@@ -489,10 +515,6 @@ if __name__ == "__main__":
 
 
 
-
-
-
-        
     # printing a beginning of computation log 
     if argom.test is None:
         print("****************************************************************")

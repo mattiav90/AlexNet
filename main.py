@@ -7,7 +7,6 @@ from torchvision import datasets, transforms
 import argparse
 import matplotlib.pyplot as plt
 import time
-from config import cfg
 from quantizer import *
 import matplotlib.pyplot as plt
 import numpy as np
@@ -16,6 +15,8 @@ import os
 import math
 import pandas as pd
 import gc
+
+
 
 from fp_model import *
 from qat_model import *
@@ -112,11 +113,11 @@ def load_datasets():
 
     # load training set
     trainset = datasets.CIFAR10(root=dataset_root, train=True, download=True, transform=transform_train)
-    train_loader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=0)
+    train_loader = torch.utils.data.DataLoader(trainset, batch_size=cfg.batch_size, shuffle=True, num_workers=0)
 
     # load testing set
     testset = datasets.CIFAR10(root=dataset_root, train=False, download=True, transform=transform_test)
-    test_loader = torch.utils.data.DataLoader(testset, batch_size=test_batch_size, shuffle=False, num_workers=0)
+    test_loader = torch.utils.data.DataLoader(testset, batch_size=cfg.test_batch_size, shuffle=False, num_workers=0)
 
     return trainset, train_loader, testset, test_loader
 
@@ -274,6 +275,7 @@ def compute_name(qat,bits,pruning,sparsity,loss_acc):
 
 
 # ************************************   main  ************************************ 
+from config import cfg
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

@@ -1,10 +1,13 @@
 import torch
 import torch.nn as nn
-from config import cfg
+
 import torch.optim as optim
 from quantizer import *
 from pruning import *
+import torch.nn.functional as F
+import gc
 
+from config import cfg
 # ************************************  train QAT  ************************************ 
 
 
@@ -330,40 +333,45 @@ def quantAwareTrainingForward(model, x, stats, vis=False, axs=None, sym=False, n
 
 
 # ************************************   quantized inference  ************************************ 
-
 def quantized_inference(model, x, stats, sym=False, num_bits=8):
-    model.eval()
-    x = x.to('cpu')
+    scale_x, zp_x = calcScaleZeroPoint(x.min(), x.max(), num_bits) if not sym else calcScaleZeroPointSym(x.min(), x.max())
     
-    scale_x, zp_x = calcScaleZeroPoint(x.min(), x.max(), num_bits)
-
-    x, scale_next, zp_next = quantizeLayer(x, model.conv1, stats['conv1'], scale_x, zp_x, sym=sym, num_bits=num_bits)
+    # Conv1
+    x, scale_x, zp_x = quantizeLayer(x, model.conv1, stats['conv1'], scale_x, zp_x, sym=sym, num_bits=num_bits)
     x = model.Maxpool(x)
     x = model.bn1(x)
 
-    x, scale_next, zp_next = quantizeLayer(x, model.conv2, stats['conv2'], scale_next, zp_next, sym=sym, num_bits=num_bits)
+    # Conv2
+    x, scale_x, zp_x = quantizeLayer(x, model.conv2, stats['conv2'], scale_x, zp_x, sym=sym, num_bits=num_bits)
     x = model.Maxpool(x)
     x = model.bn2(x)
 
-    x, scale_next, zp_next = quantizeLayer(x, model.conv3, stats['conv3'], scale_next, zp_next, sym=sym, num_bits=num_bits)
+    # Conv3
+    x, scale_x, zp_x = quantizeLayer(x, model.conv3, stats['conv3'], scale_x, zp_x, sym=sym, num_bits=num_bits)
     x = model.bn3(x)
 
-    x, scale_next, zp_next = quantizeLayer(x, model.conv4, stats['conv4'], scale_next, zp_next, sym=sym, num_bits=num_bits)
+    # Conv4
+    x, scale_x, zp_x = quantizeLayer(x, model.conv4, stats['conv4'], scale_x, zp_x, sym=sym, num_bits=num_bits)
     x = model.bn4(x)
 
-    x, scale_next, zp_next = quantizeLayer(x, model.conv5, stats['conv5'], scale_next, zp_next, sym=sym, num_bits=num_bits)
+    # Conv5
+    x, scale_x, zp_x = quantizeLayer(x, model.conv5, stats['conv5'], scale_x, zp_x, sym=sym, num_bits=num_bits)
     x = model.bn5(x)
     x = model.Maxpool(x)
 
+    # Flatten
     x = model.avgpool(x)
     x = torch.flatten(x, 1)
 
+    # FC1
+    x, scale_x, zp_x = quantizeLayer(x, model.fc1, stats['fc1'], scale_x, zp_x, sym=sym, num_bits=num_bits)
     x = model.dropout(x)
 
-    x, scale_next, zp_next = quantizeLayer(x, model.fc1, stats['fc1'], scale_next, zp_next, sym=sym, num_bits=num_bits)
+    # FC2
+    x, scale_x, zp_x = quantizeLayer(x, model.fc2, stats['fc2'], scale_x, zp_x, sym=sym, num_bits=num_bits)
     x = model.dropout(x)
-    x, scale_next, zp_next = quantizeLayer(x, model.fc2, stats['fc2'], scale_next, zp_next, sym=sym, num_bits=num_bits)
-    x, _, _ = quantizeLayer(x, model.fc3, stats['fc3'], scale_next, zp_next, sym=sym, num_bits=num_bits)
+
+    # FC3 (no activation after this)
+    x, _, _ = quantizeLayer(x, model.fc3, stats['fc3'], scale_x, zp_x, sym=sym, num_bits=num_bits)
 
     return x
-

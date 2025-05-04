@@ -3,6 +3,7 @@ import math
 
 class cfg:
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    
     batch_size = 128
     test_batch_size = 128
 
@@ -19,7 +20,7 @@ class cfg:
     activation_QAT_start = 0
     num_bits = 8
     symmetrical = True
-    stats_mode = "entropy"   # minmax or entropy
+    stats_mode = "minmax"   # minmax or entropy
     activation_bit = None    # remember to turn this off if you do not need it . (None is off)
 
     # pruning

@@ -251,7 +251,7 @@ def name_path(models_path,qat,loss_acc, actual_sparsity):
 
     
 
-def compute_name(qat,bits,pruning,sparsity,loss_acc):
+def compute_name(qat,bits,pruning,sparsity,loss_acc,out_name):
 
     _,_,acc = loss_acc[-1]
     acc_last = acc[-1]
@@ -264,7 +264,11 @@ def compute_name(qat,bits,pruning,sparsity,loss_acc):
     name = f"qat_{qat}_bits_{bits}_pruning_{pruning}_sparsity_{sparsity}_acc_{acc_last}"
     title = f"QAT {num_bits} bits Sparsity: {int(sparsity)} on CIFAR-10"
     
+    if out_name is not None:
+        name=out_name
+    
     path= f"./{models_path}/{name}"
+    print("path: ",path)
     
     return name,title,path
 
@@ -276,7 +280,7 @@ def compute_name(qat,bits,pruning,sparsity,loss_acc):
 
 
 # Save fp model 
-def save_model_func(model, file_name, qat, stats=None):
+def save_model_func(model, file_name, qat, out_name, stats=None):
 
     # set the model in evaluation mode before saving it. otherwise you save values meant for training and not inference 
     # During train(): BatchNorm uses batch stats; FakeQuantize updates its observer stats.
@@ -297,9 +301,18 @@ def save_model_func(model, file_name, qat, stats=None):
     #     },file_name )
     
     # else:
-
+    
+    if out_name is not None:
+        file_name=out_name
+        file_name=f"./{models_path}/{out_name}"
+    
+    
     if not file_name.endswith('.pt'):
         file_name += '.pt'
+        
+
+
+    print("file_name: ",file_name)
     
     # set the model in evaluation mode before saving it. otherwise you save values meant for training and not inference 
     torch.save(model.state_dict(), file_name)
@@ -351,6 +364,8 @@ if __name__ == "__main__":
     stats_mode = cfg.stats_mode
     activation_bit = cfg.activation_bit
     
+    out_name =argom.out
+    
     
     if activation_bit is not None:
         print(" (!) I am forcing activation quantization to be: ",activation_bit)
@@ -376,39 +391,32 @@ if __name__ == "__main__":
 
 	
 
-    # load training ant testing datasets
+    # load training and testing datasets
     trainset,train_loader,testset,test_loader = load_datasets()
+    # create alexnet model
+    use_cuda = not no_cuda and torch.cuda.is_available()
+    device = torch.device("cuda" if use_cuda else "cpu")
+    model = AlexNet()
+    model.to(device)
+
     
-    # load a an already trained model. to train more.
+    # ********************************************** LOAD TO TRAIN MORE **********************************************
     if argom.load is not None:
-        use_cuda = not no_cuda and torch.cuda.is_available()
-        device = torch.device("cuda" if use_cuda else "cpu")
-        model = AlexNet()
         model=load_model(argom.load,model)
         # set the model in evauation mode
         model.eval()
-        
         # calculate sparsity of loaded model 
         print("loading the model and checking that the sparsity is correct...")
         model = mask_frozen_weights(model)
         calculate_pruned_sparsity(model)
         # apply the pruning mask to match the current sparsity. 
-        
         model.to(cfg.device)
         print(f"Model {argom.load} loaded.")
         
         # loaded models are usually already trained. decrease the learning rate.
         lr = lr * 0.5
-    else:
-        model = None
         
-        
-    
-    # model definition 
-    use_cuda = not no_cuda and torch.cuda.is_available()
-    device = torch.device("cuda" if use_cuda else "cpu")
-    model = AlexNet()
-    model.to(device)
+
 
 
 
@@ -496,7 +504,7 @@ if __name__ == "__main__":
             model, stats, loss_acc = main_QuantAwareTrain(trainset,train_loader,testset,test_loader,argom.out,symmetrical,pruning,argom.es,model=model)
 
         # generate plot and model name
-        name,title,path = compute_name(argom.qat,num_bits,pruning,final_sparsity,loss_acc)
+        name,title,path = compute_name(argom.qat,num_bits,pruning,final_sparsity,loss_acc,out_name)
 
         # plot
         plot_loss_accuracy(loss_acc, argom.qat, pruning,final_sparsity, num_bits, title=title, save_path=path)
@@ -507,10 +515,10 @@ if __name__ == "__main__":
             print("saving model...")
             if argom.qat:
                 print("save model qat")
-                save_model_func(model,path,True,stats=stats)
+                save_model_func(model,path,True,out_name,stats=stats)
             else:
                 print("save model fp")
-                save_model_func(model,path,False)
+                save_model_func(model,path,out_name,False)
 
 
 

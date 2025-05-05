@@ -280,7 +280,7 @@ def compute_name(qat,bits,pruning,sparsity,loss_acc,out_name):
 
 
 # Save fp model 
-def save_model_func(model, file_name, qat, out_name, stats=None):
+def save_model_func(model, file_name, qat, out_name, stats=None, save_stats=False):
 
     # set the model in evaluation mode before saving it. otherwise you save values meant for training and not inference 
     # During train(): BatchNorm uses batch stats; FakeQuantize updates its observer stats.
@@ -289,33 +289,45 @@ def save_model_func(model, file_name, qat, out_name, stats=None):
     model.apply(torch.quantization.disable_observer)
     # apply_pruning_mask(model)
     make_pruning_permanent(model)
-        
-    # if qat:   
-    #     if not file_name.endswith('.pth'):
-    #         file_name += '.pth'
-            
-    #     print("Saving the model with this stats: ",stats )
-    #     torch.save({
-    #     'model_state_dict': model.state_dict(),
-    #     'stats': stats
-    #     },file_name )
-    
-    # else:
-    
+
     if out_name is not None:
         file_name=out_name
         file_name=f"./{models_path}/{out_name}"
-    
-    
-    if not file_name.endswith('.pt'):
-        file_name += '.pt'
+
+
+    # quantization aware training 
+    if qat:
+
+        # save the activation stats generate during training
+        if save_stats:   
+            if not file_name.endswith('.pth'):
+                file_name += '.pth'
+                
+            print("Saving the model with this stats: ",stats )
+            torch.save({
+            'model_state_dict': model.state_dict(),
+            'stats': stats
+            },file_name )
         
+        # save just the model, with no stats
+        else:
+            if not file_name.endswith('.pt'):
+                file_name += '.pt'
+                print("file_name: ",file_name)
+                # set the model in evaluation mode before saving it. otherwise you save values meant for training and not inference 
+                torch.save(model.state_dict(), file_name)
+            
 
+    # save the floating point model 
+    else:
 
-    print("file_name: ",file_name)
+        if not file_name.endswith('.pt'):
+            file_name += '.pt'
+            print("file_name: ",file_name)
+            # set the model in evaluation mode before saving it. otherwise you save values meant for training and not inference 
+            torch.save(model.state_dict(), file_name)
+            
     
-    # set the model in evaluation mode before saving it. otherwise you save values meant for training and not inference 
-    torch.save(model.state_dict(), file_name)
     
     
 
@@ -425,39 +437,37 @@ if __name__ == "__main__":
         
         # ********************************************** QAT TESTING **********************************************
         if argom.qat:
-            print("testing qat.")
-            
-            # apply the pruning wrapper, without adding sparsity.
-            # apply_dummy_pruning(model)
-            # try:
-            #     # for pth files. 
-            #     checkpoint = torch.load(argom.test, map_location=device)
-            #     model.load_state_dict( checkpoint['model_state_dict'] )  # Correct key
-            #     stats = checkpoint['stats']
-            # except:
-            model_state_dict = torch.load(argom.test, map_location=device)
-            
-            print("generating stats...")
-            stats = gatherStats(model,test_loader)
-            
-            print("calcualted stats: ",stats,"\n\n")
 
+            print("testing qat.")
             model.to(device)
             model.eval()
+
+            # loading a model to test
+            try:
+                checkpoint = torch.load(argom.test,map_location=device)
+                model.load_state_dict(checkpoint['model_state_dict'])
+                stats=checkpoint['stats']
+                print(" <!!!> loaded model with stats. stats: ",stats,"\n")
             
+            except:
+                model_state_dict = torch.load(argom.test, map_location=device)
+                print(" <!!!> Loaded model with NO stats. Generating activation stats... mode: ",cfg.stats_mode,"\n")
+                stats = gatherStats(model,test_loader,cfg.stats_mode)
+                print("Calcualted stats: ",stats,"\n\n")
+
             # Evaluate using quantized inference
             all_preds = []
             all_labels = []
-
             with torch.no_grad():
                 for a,(data, target) in enumerate(test_loader):
-                    data = data.to(device)
-                    target = target.to(device)
-                    
-                    
+                    data, target = data.to(device), target.to(device)
                     print("testing img: ",a , end='\r')
+
                     # Run quantized inference on the input batch
-                    output = quantized_forward(model, data, stats, sym=symmetrical, num_bits=num_bits)
+                    output = quantAwareTestingForward(model, data, stats,
+                                        num_bits=num_bits,
+                                        act_quant=True,
+                                        sym=cfg.symmetrical, mode=cfg.stats_mode)
 
                     # Get predicted labels
                     pred = output.argmax(dim=1, keepdim=False)
@@ -515,7 +525,7 @@ if __name__ == "__main__":
             print("saving model...")
             if argom.qat:
                 print("save model qat")
-                save_model_func(model,path,True,out_name,stats=stats)
+                save_model_func(model,path,True,out_name,stats=stats,save_stats=True)
             else:
                 print("save model fp")
                 save_model_func(model,path,out_name,False)

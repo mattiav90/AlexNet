@@ -64,19 +64,34 @@ def dequantize_tensor(q_x):
 
 
 
-
+# during statistics update, make sure that the graph is disconnected from the data. 
+# use .item() and .cpu() for that. 
 def updateStats(x, stats, key, mode="minmax"):
-    
+    """
+    Update activation statistics using min max-based metrics.
+
+    Args:
+        x: Activation tensor.
+        stats: Dictionary tracking per-layer stats.
+        key: Identifier for layer.
+    """
     if mode=="minmax":
-        max_val, _ = torch.max(x, dim=1)
-        min_val, _ = torch.min(x, dim=1)
+        x = x.detach()
 
+        max_val = torch.max(x, dim=1)[0].cpu()
+        min_val = torch.min(x, dim=1)[0].cpu()
 
+        # create a new key
         if key not in stats:
-            stats[key] = {"max": max_val.sum(), "min": min_val.sum(), "total": 1}
+            stats[key] = {  "max":   max_val.sum().item(),
+                            "min":   min_val.sum().item(),
+                            "total": 1
+                        }
+        
+        # update the present key
         else:
-            stats[key]['max'] += max_val.sum().item()
-            stats[key]['min'] += min_val.sum().item()
+            stats[key]['max']   += max_val.sum().item()
+            stats[key]['min']   += min_val.sum().item()
             stats[key]['total'] += 1
 
         weighting = 2.0 / (stats[key]['total']) + 1
@@ -140,7 +155,7 @@ def updateStats(x, stats, key, mode="minmax"):
             entropy_min_val = x_min + entropy_min_idx * bin_width
             entropy_max_val = x_min + entropy_max_idx * bin_width
 
-        # Initialize or update stats
+        # Initialize stats
         if key not in stats:
             stats[key] = {
                 "total": 1,
@@ -150,6 +165,7 @@ def updateStats(x, stats, key, mode="minmax"):
                 "entropy_max_val": entropy_max_val,
             }
             
+        # update stats
         else:
             stats[key]['total'] += 1
             stats[key]['entropy_sum'] += entropy
@@ -158,7 +174,6 @@ def updateStats(x, stats, key, mode="minmax"):
             stats[key]['entropy_min_val'] = w * entropy_min_val + (1 - w) * stats[key]['entropy_min_val']
             stats[key]['entropy_max_val'] = w * entropy_max_val + (1 - w) * stats[key]['entropy_max_val']
             
-            # print("key: ",key," is in the stats")
 
         stats[key]['entropy_avg'] = stats[key]['entropy_sum'] / stats[key]['total']
 

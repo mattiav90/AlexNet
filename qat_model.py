@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 from pruning import *
 import torch.nn.functional as F
-import gc
+import copy
 
 # files
 from quantizer_train import *
@@ -95,6 +95,7 @@ def trainQuantAware(args, model, device, train_loader, test_loader, optimizer, e
             # because testQuantAware calls quantAwareTrainingForward again, I have to detach it from the graph. 
             # calculate the loss ON THE TESTING SET.
             with torch.no_grad():
+                
                 loss_temp, accuracy_temp = testQuantAware(args, model, device, test_loader, stats,
                                                           act_quant=act_quant, num_bits=num_bits, sym=sym, is_test=True)
 
@@ -151,10 +152,11 @@ def testQuantAware(args, model, device, test_loader, stats, act_quant, num_bits=
 # forward pass during training. 
 # apply fake quantization to weights and act
 # update the activation statistics. 
+# FakeQuantOp.apply by default applies minmax quantization
+# mode parameter only effects the activations quantization mode
 def quantAwareTrainingForward(model, x, stats, sym=False, num_bits=8, act_quant=False, mode="minmax"):
     
     def apply_quant(tensor, name, mode="minmax"):
-
         if mode=="minmax":
             return FakeQuantOp.apply(
                 tensor,
@@ -164,12 +166,9 @@ def quantAwareTrainingForward(model, x, stats, sym=False, num_bits=8, act_quant=
                 sym
             )
         elif mode=="entropy":
-            # print("passing entropy. min= ",stats[name]['entropy_min_val']," max: ",stats[name]['entropy_max_val'])
-            bits_effective = cfg.activation_bit if cfg.activation_bit is not None else num_bits
-            # print("quantizing with bits_effective: ",bits_effective)
             return FakeQuantOp.apply(
                 tensor,
-                bits_effective,
+                num_bits,
                 stats[name]['entropy_min_val'],
                 stats[name]['entropy_max_val'],
                 sym
@@ -262,6 +261,7 @@ def quantAwareTrainingForward(model, x, stats, sym=False, num_bits=8, act_quant=
 # apply quantization on both activations and weights. 
 # do not update the statistics. 
 def quantAwareTestingForward(model, x, stats, sym=False, num_bits=8, act_quant=False, mode="minmax"):
+    model.eval()
 
     def apply_quant(tensor, name, mode="minmax"):
         tensor = tensor.detach()
@@ -275,10 +275,9 @@ def quantAwareTestingForward(model, x, stats, sym=False, num_bits=8, act_quant=F
                 sym
             )
         elif mode=="entropy":
-            bits_effective = cfg.activation_bit if cfg.activation_bit is not None else num_bits
             return FakeQuantOp.apply(
                 tensor,
-                bits_effective,
+                num_bits,
                 stats[name]['entropy_min_val'],
                 stats[name]['entropy_max_val'],
                 sym

@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 from collections import namedtuple
+from quantizer_train import updateStats
 
 QTensor = namedtuple('QTensor', ['tensor', 'scale', 'zero_point'])
 
@@ -136,138 +137,80 @@ def quantizeLayer(x, layer, stat, scale_x, zp_x, vis=False, axs=None, X=None, y=
 
 
 
-def updateStats(x, stats, key):
-    max_val, _ = torch.max(x, dim=1)
-    min_val, _ = torch.min(x, dim=1)
-
-
-    if key not in stats:
-        stats[key] = {"max": max_val.sum(), "min": min_val.sum(), "total": 1}
-    else:
-        stats[key]['max'] += max_val.sum().item()
-        stats[key]['min'] += min_val.sum().item()
-        stats[key]['total'] += 1
-
-    weighting = 2.0 / (stats[key]['total']) + 1
-
-    if 'ema_min' in stats[key]:
-        stats[key]['ema_min'] = weighting * (min_val.mean().item()) + (1 - weighting) * stats[key]['ema_min']
-    else:
-        stats[key]['ema_min'] = weighting * (min_val.mean().item())
-
-    if 'ema_max' in stats[key]:
-        stats[key]['ema_max'] = weighting * (max_val.mean().item()) + (1 - weighting) * stats[key]['ema_max']
-    else:
-        stats[key]['ema_max'] = weighting * (max_val.mean().item())
-
-    stats[key]['min_val'] = stats[key]['min'] / stats[key]['total']
-    stats[key]['max_val'] = stats[key]['max'] / stats[key]['total']
-
-    return stats
 
 
 
-def gatherActivationStats(model, x, stats):
-    stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv1')
+def gatherActivationStats(model, x, stats, mode):
+    stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv1', mode )
 
     x = F.relu(model.conv1(x))
     x = model.bn1(x)
 
-
-    stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv2')
-
+    stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv2', mode )
     x = F.relu(model.conv2(x))
     x = model.bn2(x)
     x = F.max_pool2d(x, 3, 2)
 
-    stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv3')
+    stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv3', mode )
     x = F.relu(model.conv3(x))
     x = model.bn3(x)
-    stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv4')
+
+    stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv4', mode )
     x = F.relu(model.conv4(x))
     x = model.bn4(x)
-    stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv5')
+
+    stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv5', mode )
     x = F.relu(model.conv5(x))
     x = model.bn5(x)
 
     x = F.max_pool2d(x, 3, 2)
     x = F.adaptive_avg_pool2d(x,(6,6))
     x = torch.flatten(x, 1)
+    print("x.shape: ",x.shape)
     # x = x.view(-1, 1250) #CIFAR10
 
-    stats = updateStats(x, stats, 'fc1')
-
+    stats = updateStats(x, stats, 'fc1', mode )
     x = F.relu(model.fc1(x))
 
-    stats = updateStats(x, stats, 'fc2')
-
+    stats = updateStats(x, stats, 'fc2', mode )
     x = F.relu(model.fc2(x))
 
-    stats = updateStats(x, stats, 'fc3')
-
+    stats = updateStats(x, stats, 'fc3', mode )
     x = model.fc3(x)
 
     return stats
 
 
-def gatherStats(model, test_loader):
-    device = 'cpu'
 
+
+def gatherStats(model, test_loader, mode):
+    device = 'cpu'
     model.eval()
     stats = {}
+
     with torch.no_grad():
         for data, target in test_loader:
             data, target = data.to(device), target.to(device)
-            stats = gatherActivationStats(model, data, stats)
+            stats = gatherActivationStats(model, data, stats, mode)
 
     final_stats = {}
     for key, value in stats.items():
-        final_stats[key] = {"max": value["max"] / value["total"], "min": value["min"] / value["total"],
-                            "ema_min": value["ema_min"], "ema_max": value["ema_max"]}
+        if mode == "minmax":
+            final_stats[key] = {
+                "min_val": value["min"] / value["total"],
+                "max_val": value["max"] / value["total"],
+                "ema_min": value["ema_min"],
+                "ema_max": value["ema_max"]
+            }
+        elif mode == "entropy":
+            final_stats[key] = {
+                "entropy_avg": value["entropy_sum"] / value["total"],
+                "ema_entropy": value["ema_entropy"],
+                "entropy_min_val": value["entropy_min_val"],
+                "entropy_max_val": value["entropy_max_val"]
+            }
+
     return final_stats
 
 
-
-
-
-def quantized_forward(model, x, stats, num_bits=8, sym=False):
-    x = x.to('cpu')
-    model.eval()
-
-    # Conv1 -> MaxPool -> BN
-    x, scale_x, zp_x = quantizeLayer(x, model.conv1, stats["conv1"], scale_x=1.0, zp_x=0, num_bits=num_bits, sym=sym)
-    x = model.Maxpool(x)
-    x = model.bn1(x)
-
-    # Conv2 -> MaxPool -> BN
-    x, scale_x, zp_x = quantizeLayer(x, model.conv2, stats["conv2"], scale_x=scale_x, zp_x=zp_x, num_bits=num_bits, sym=sym)
-    x = model.Maxpool(x)
-    x = model.bn2(x)
-
-    # Conv3 -> BN
-    x, scale_x, zp_x = quantizeLayer(x, model.conv3, stats["conv3"], scale_x=scale_x, zp_x=zp_x, num_bits=num_bits, sym=sym)
-    x = model.bn3(x)
-
-    # Conv4 -> BN
-    x, scale_x, zp_x = quantizeLayer(x, model.conv4, stats["conv4"], scale_x=scale_x, zp_x=zp_x, num_bits=num_bits, sym=sym)
-    x = model.bn4(x)
-
-    # Conv5 -> BN -> MaxPool
-    x, scale_x, zp_x = quantizeLayer(x, model.conv5, stats["conv5"], scale_x=scale_x, zp_x=zp_x, num_bits=num_bits, sym=sym)
-    x = model.bn5(x)
-    x = model.Maxpool(x)
-
-    x = model.avgpool(x)
-    x = torch.flatten(x, 1)
-
-    # FC1 
-    x, scale_x, zp_x = quantizeLayer(x, model.fc1, stats["fc1"], scale_x=scale_x, zp_x=zp_x, num_bits=num_bits, sym=sym)
-
-    # FC2 
-    x, scale_x, zp_x = quantizeLayer(x, model.fc2, stats["fc2"], scale_x=scale_x, zp_x=zp_x, num_bits=num_bits, sym=sym)
-
-    # FC3 
-    x, scale_x, zp_x = quantizeLayer(x, model.fc3, stats["fc3"], scale_x=scale_x, zp_x=zp_x, num_bits=num_bits, sym=sym)
-
-    return x
 

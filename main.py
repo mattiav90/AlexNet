@@ -442,47 +442,27 @@ if __name__ == "__main__":
             model.to(device)
             model.eval()
 
-            # loading a model to test
+            # Loading a model with statistics (.pth)
             try:
                 checkpoint = torch.load(argom.test,map_location=device)
                 model.load_state_dict(checkpoint['model_state_dict'])
                 stats=checkpoint['stats']
                 print(" <!!!> loaded model with stats. stats: ",stats,"\n")
             
+            # load a model with no stats. (generate the stats)
             except:
                 model_state_dict = torch.load(argom.test, map_location=device)
-                print(" <!!!> Loaded model with NO stats. Generating activation stats... mode: ",cfg.stats_mode,"\n")
+                print("\n <!!!> Loaded model with NO stats. Generating activation stats... mode: ",cfg.stats_mode,"\n")
                 stats = gatherStats(model,test_loader,cfg.stats_mode)
                 print("Calcualted stats: ",stats,"\n\n")
 
-            # Evaluate using quantized inference
-            all_preds = []
-            all_labels = []
-            with torch.no_grad():
-                for a,(data, target) in enumerate(test_loader):
-                    data, target = data.to(device), target.to(device)
-                    print("testing img: ",a , end='\r')
+            # testing the loaded model.  
+            args={}
+            args["log_interval"] = cfg.log_interval
+            loss_temp, accuracy_temp = testQuantAware(args, model, device, test_loader, stats,
+                                            act_quant=True, num_bits=num_bits, sym=cfg.symmetrical, is_test=True)
 
-                    # Run quantized inference on the input batch
-                    output = quantAwareTestingForward(model, data, stats,
-                                        num_bits=num_bits,
-                                        act_quant=True,
-                                        sym=cfg.symmetrical, mode=cfg.stats_mode)
 
-                    # Get predicted labels
-                    pred = output.argmax(dim=1, keepdim=False)
-
-                    # Store results
-                    all_preds.append(pred.cpu())
-                    all_labels.append(target.cpu())
-
-            # Combine all predictions and targets
-            all_preds = torch.cat(all_preds)
-            all_labels = torch.cat(all_labels)
-
-            # Compute accuracy
-            accuracy = (all_preds == all_labels).float().mean().item()
-            print(f"\nQuantized inference accuracy: {accuracy * 100:.2f}%")
 
 
         # ********************************************** FP TESTING **********************************************

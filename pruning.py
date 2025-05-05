@@ -41,7 +41,7 @@ def calculate_pruned_sparsity(model, verbose=True):
 
     if not found_mask:
         if verbose:
-            print("No pruning masks found. Returning 0% sparsity.")
+            print("(*) No pruning masks found. Returning 0% sparsity.")
         return 0.0
 
     overall_sparsity = 100.0 * total_zeros / total_elements

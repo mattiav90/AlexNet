@@ -52,6 +52,10 @@ def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name,sy
         # the learning rate scheduler uses loss to calibrate. 
         scheduler.step(loss_temp[-1])
 
+        # make sure that it is not training the pruned weights. (if there are any)
+        calculate_pruned_sparsity(model)
+
+
     return model, stats, loss_acc
 
 
@@ -59,7 +63,7 @@ def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name,sy
 
 # changed
 def trainQuantAware(args, model, device, train_loader, test_loader, optimizer, epoch, stats, act_quant=False, current_sparsity=0, num_bits=8, sym=False, early_stopping=None):
-
+    model.train()
     loss_log = []
     accuracy_log = []
     i = 0
@@ -78,27 +82,10 @@ def trainQuantAware(args, model, device, train_loader, test_loader, optimizer, e
         # calculate the loss (ON THE TRAINING SET)
         loss = F.cross_entropy(output, target)
 
-        # replace NaN or Inf with a large finite value
-        MAX_LOSS_VALUE=20
-        if not torch.isfinite(loss):
-            print(f" Loss was non-finite (value: {loss.item()}). Clamping to {MAX_LOSS_VALUE}.", end='\r')
-            loss = torch.tensor(MAX_LOSS_VALUE, device=loss.device, dtype=loss.dtype, requires_grad=True)
-
         # loss.backward(retain_graph=True)
         loss.backward()
         optimizer.step()
         
-        # make sure that the previously pruned weights are not used for training.
-        # Enforce pruning masks after weight update
-        # for name, module in model.named_modules():
-        #     if isinstance(module, (nn.Conv2d, nn.Linear)) and hasattr(module, "weight_mask"):
-        #         module.weight.data *= module.weight_mask
-
-        # making sure that I leaving the sparsity as it is. 
-        calculate_pruned_sparsity(model)
-        
-                
-
         # logging
         if batch_idx % args["log_interval"] == 0:
             print('QAT. Train Epoch: {} [{:.0f}% ({}/{})] Loss: {:.6f}'.format(
@@ -111,40 +98,39 @@ def trainQuantAware(args, model, device, train_loader, test_loader, optimizer, e
                 loss_temp, accuracy_temp = testQuantAware(args, model, device, test_loader, stats,
                                                           act_quant=act_quant, num_bits=num_bits, sym=sym, is_test=True)
 
+            # the cumulated loss is from the testing set. 
             loss_log.append(loss_temp)
             accuracy_log.append(accuracy_temp)
+           
+            # early stopping for debug 
             i += 1
-
             if early_stopping is not None and i >= early_stopping:
                 print("Early stopping at epoch: ", epoch)
                 break
         
-        # clean the forward graph. to make sure it is not re-used between train and inference. 
-        gc.collect()
-        torch.cuda.empty_cache()
 
     return [loss_log, accuracy_log]
 
 
 
 
-# changed
+# quantization aware testing. 
 def testQuantAware(args, model, device, test_loader, stats, act_quant, num_bits=4, sym=False, is_test=False):
 
     model.eval()
     test_loss = 0
     correct = 0
 
+    # do not buils a gradient graph. 
     with torch.no_grad():
         for i, (data, target) in enumerate(test_loader):
             data, target = data.to(device), target.to(device)
-
             print("testing: ",i , end='\r')
-            with torch.no_grad():
-                output, stats = quantAwareTrainingForward(model, data, stats,
-                                                        num_bits=num_bits,
-                                                        act_quant=act_quant,
-                                                        sym=sym, is_test=is_test, mode=cfg.stats_mode)
+
+            output = quantAwareTestingForward(model, data, stats,
+                                                    num_bits=num_bits,
+                                                    act_quant=act_quant,
+                                                    sym=sym, mode=cfg.stats_mode)
 
             test_loss += F.cross_entropy(output, target, reduction='sum').item()  # sum up batch loss
             pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
@@ -162,14 +148,13 @@ def testQuantAware(args, model, device, test_loader, stats, act_quant, num_bits=
 
 
 
-
-
-def quantAwareTrainingForward(model, x, stats, vis=False, axs=None, sym=False, num_bits=8, act_quant=False, is_test=False, mode="minmax"):
+# forward pass during training. 
+# apply fake quantization to weights and act
+# update the activation statistics. 
+def quantAwareTrainingForward(model, x, stats, sym=False, num_bits=8, act_quant=False, mode="minmax"):
     
     def apply_quant(tensor, name, mode="minmax"):
-        if is_test:
-            tensor = tensor.detach()
-        
+
         if mode=="minmax":
             return FakeQuantOp.apply(
                 tensor,
@@ -195,9 +180,7 @@ def quantAwareTrainingForward(model, x, stats, vis=False, axs=None, sym=False, n
     x = F.conv2d(x, weight, model.conv1.bias, model.conv1.stride, model.conv1.padding, model.conv1.dilation, model.conv1.groups)
     x = F.relu(x)
     x = model.bn1(x)
-    with torch.no_grad():
-        stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv1', mode=mode)
-        # stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv1', mode="entropy")
+    stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv1', mode=mode)
     if act_quant:
         x = apply_quant(x, 'conv1', mode=mode)
     x = F.max_pool2d(x, 3, 2)
@@ -207,8 +190,7 @@ def quantAwareTrainingForward(model, x, stats, vis=False, axs=None, sym=False, n
     x = F.conv2d(x, weight, model.conv2.bias, model.conv2.stride, model.conv2.padding, model.conv2.dilation, model.conv2.groups)
     x = F.relu(x)
     x = model.bn2(x)
-    with torch.no_grad():
-        stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv2', mode=mode)
+    stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv2', mode=mode)
     if act_quant:
         x = apply_quant(x, 'conv2', mode=mode)
     x = F.max_pool2d(x, 3, 2)
@@ -218,8 +200,7 @@ def quantAwareTrainingForward(model, x, stats, vis=False, axs=None, sym=False, n
     x = F.conv2d(x, weight, model.conv3.bias, model.conv3.stride, model.conv3.padding, model.conv3.dilation, model.conv3.groups)
     x = F.relu(x)
     x = model.bn3(x)
-    with torch.no_grad():
-        stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv3', mode=mode)
+    stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv3', mode=mode)
     if act_quant:
         x = apply_quant(x, 'conv3', mode=mode)
 
@@ -228,8 +209,7 @@ def quantAwareTrainingForward(model, x, stats, vis=False, axs=None, sym=False, n
     x = F.conv2d(x, weight, model.conv4.bias, model.conv4.stride, model.conv4.padding, model.conv4.dilation, model.conv4.groups)
     x = F.relu(x)
     x = model.bn4(x)
-    with torch.no_grad():
-        stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv4', mode=mode)
+    stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv4', mode=mode)
     if act_quant:
         x = apply_quant(x, 'conv4', mode=mode)
 
@@ -238,8 +218,7 @@ def quantAwareTrainingForward(model, x, stats, vis=False, axs=None, sym=False, n
     x = F.conv2d(x, weight, model.conv5.bias, model.conv5.stride, model.conv5.padding, model.conv5.dilation, model.conv5.groups)
     x = F.relu(x)
     x = model.bn5(x)
-    with torch.no_grad():
-        stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv5', mode=mode)
+    stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'conv5', mode=mode)
     if act_quant:
         x = apply_quant(x, 'conv5', mode=mode)
 
@@ -254,8 +233,7 @@ def quantAwareTrainingForward(model, x, stats, vis=False, axs=None, sym=False, n
     x = F.linear(x, weight, model.fc1.bias)
     x = F.relu(x)
     x = model.dropout(x)
-    with torch.no_grad():
-        stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'fc1', mode=mode)
+    stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'fc1', mode=mode)
     if act_quant:
         x = apply_quant(x, 'fc1', mode=mode)
 
@@ -263,16 +241,14 @@ def quantAwareTrainingForward(model, x, stats, vis=False, axs=None, sym=False, n
     weight = FakeQuantOp.apply(model.fc2.weight, num_bits, None, None, sym)
     x = F.linear(x, weight, model.fc2.bias)
     x = F.relu(x)
-    with torch.no_grad():
-        stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'fc2', mode=mode)
+    stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'fc2', mode=mode)
     if act_quant:
         x = apply_quant(x, 'fc2', mode=mode)
 
     # -------- FC3 (Output Layer) --------
     weight = FakeQuantOp.apply(model.fc3.weight, num_bits, None, None, sym)
     x = F.linear(x, weight, model.fc3.bias)
-    with torch.no_grad():
-        stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'fc3', mode=mode)
+    stats = updateStats(x.clone().view(x.shape[0], -1), stats, 'fc3', mode=mode)
     if act_quant:
         x = apply_quant(x, 'fc3', mode=mode)
 
@@ -282,47 +258,98 @@ def quantAwareTrainingForward(model, x, stats, vis=False, axs=None, sym=False, n
 
 
 
+# forward pass during testing. 
+# apply quantization on both activations and weights. 
+# do not update the statistics. 
+def quantAwareTestingForward(model, x, stats, sym=False, num_bits=8, act_quant=False, mode="minmax"):
 
-# ************************************   quantized inference  ************************************ 
-def quantized_inference(model, x, stats, sym=False, num_bits=8):
-    scale_x, zp_x = calcScaleZeroPoint(x.min(), x.max(), num_bits) if not sym else calcScaleZeroPointSym(x.min(), x.max())
-    
-    # Conv1
-    x, scale_x, zp_x = quantizeLayer(x, model.conv1, stats['conv1'], scale_x, zp_x, sym=sym, num_bits=num_bits)
-    x = model.Maxpool(x)
+    def apply_quant(tensor, name, mode="minmax"):
+        tensor = tensor.detach()
+        
+        if mode=="minmax":
+            return FakeQuantOp.apply(
+                tensor,
+                num_bits,
+                stats[name]['min_val'],
+                stats[name]['max_val'],
+                sym
+            )
+        elif mode=="entropy":
+            bits_effective = cfg.activation_bit if cfg.activation_bit is not None else num_bits
+            return FakeQuantOp.apply(
+                tensor,
+                bits_effective,
+                stats[name]['entropy_min_val'],
+                stats[name]['entropy_max_val'],
+                sym
+            )
+
+    # -------- Layer 1 --------
+    weight = FakeQuantOp.apply(model.conv1.weight, num_bits, None, None, sym)
+    x = F.conv2d(x, weight, model.conv1.bias, model.conv1.stride, model.conv1.padding, model.conv1.dilation, model.conv1.groups)
+    x = F.relu(x)
     x = model.bn1(x)
+    if act_quant:
+        x = apply_quant(x, 'conv1', mode=mode)
+    x = F.max_pool2d(x, 3, 2)
 
-    # Conv2
-    x, scale_x, zp_x = quantizeLayer(x, model.conv2, stats['conv2'], scale_x, zp_x, sym=sym, num_bits=num_bits)
-    x = model.Maxpool(x)
+    # -------- Layer 2 --------
+    weight = FakeQuantOp.apply(model.conv2.weight, num_bits, None, None, sym)
+    x = F.conv2d(x, weight, model.conv2.bias, model.conv2.stride, model.conv2.padding, model.conv2.dilation, model.conv2.groups)
+    x = F.relu(x)
     x = model.bn2(x)
+    if act_quant:
+        x = apply_quant(x, 'conv2', mode=mode)
+    x = F.max_pool2d(x, 3, 2)
 
-    # Conv3
-    x, scale_x, zp_x = quantizeLayer(x, model.conv3, stats['conv3'], scale_x, zp_x, sym=sym, num_bits=num_bits)
+    # -------- Layer 3 --------
+    weight = FakeQuantOp.apply(model.conv3.weight, num_bits, None, None, sym)
+    x = F.conv2d(x, weight, model.conv3.bias, model.conv3.stride, model.conv3.padding, model.conv3.dilation, model.conv3.groups)
+    x = F.relu(x)
     x = model.bn3(x)
+    if act_quant:
+        x = apply_quant(x, 'conv3', mode=mode)
 
-    # Conv4
-    x, scale_x, zp_x = quantizeLayer(x, model.conv4, stats['conv4'], scale_x, zp_x, sym=sym, num_bits=num_bits)
+    # -------- Layer 4 --------
+    weight = FakeQuantOp.apply(model.conv4.weight, num_bits, None, None, sym)
+    x = F.conv2d(x, weight, model.conv4.bias, model.conv4.stride, model.conv4.padding, model.conv4.dilation, model.conv4.groups)
+    x = F.relu(x)
     x = model.bn4(x)
+    if act_quant:
+        x = apply_quant(x, 'conv4', mode=mode)
 
-    # Conv5
-    x, scale_x, zp_x = quantizeLayer(x, model.conv5, stats['conv5'], scale_x, zp_x, sym=sym, num_bits=num_bits)
+    # -------- Layer 5 --------
+    weight = FakeQuantOp.apply(model.conv5.weight, num_bits, None, None, sym)
+    x = F.conv2d(x, weight, model.conv5.bias, model.conv5.stride, model.conv5.padding, model.conv5.dilation, model.conv5.groups)
+    x = F.relu(x)
     x = model.bn5(x)
-    x = model.Maxpool(x)
+    if act_quant:
+        x = apply_quant(x, 'conv5', mode=mode)
 
-    # Flatten
-    x = model.avgpool(x)
+    # -------- Pooling + Flatten --------
+    x = F.max_pool2d(x, 3, 2)
+    x = F.adaptive_avg_pool2d(x, (6, 6))
     x = torch.flatten(x, 1)
+    
+    # -------- FC1 --------
+    weight = FakeQuantOp.apply(model.fc1.weight, num_bits, None, None, sym)
+    x = F.linear(x, weight, model.fc1.bias)
+    x = F.relu(x)
+    if act_quant:
+        x = apply_quant(x, 'fc1', mode=mode)
 
-    # FC1
-    x, scale_x, zp_x = quantizeLayer(x, model.fc1, stats['fc1'], scale_x, zp_x, sym=sym, num_bits=num_bits)
-    x = model.dropout(x)
+    # -------- FC2 --------
+    weight = FakeQuantOp.apply(model.fc2.weight, num_bits, None, None, sym)
+    x = F.linear(x, weight, model.fc2.bias)
+    x = F.relu(x)
+    if act_quant:
+        x = apply_quant(x, 'fc2', mode=mode)
 
-    # FC2
-    x, scale_x, zp_x = quantizeLayer(x, model.fc2, stats['fc2'], scale_x, zp_x, sym=sym, num_bits=num_bits)
-    x = model.dropout(x)
-
-    # FC3 (no activation after this)
-    x, _, _ = quantizeLayer(x, model.fc3, stats['fc3'], scale_x, zp_x, sym=sym, num_bits=num_bits)
+    # -------- FC3 (Output Layer) --------
+    weight = FakeQuantOp.apply(model.fc3.weight, num_bits, None, None, sym)
+    x = F.linear(x, weight, model.fc3.bias)
+    if act_quant:
+        x = apply_quant(x, 'fc3', mode=mode)
 
     return x
+

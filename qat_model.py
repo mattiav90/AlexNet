@@ -28,7 +28,6 @@ def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name,sy
     # scheduler 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', patience=cfg.lr_step_size, factor=cfg.lr_gamma)
 
-
     args={}
     args["log_interval"] = cfg.log_interval
     stats={}
@@ -53,6 +52,7 @@ def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name,sy
         scheduler.step(loss_temp[-1])
 
         # make sure that it is not training the pruned weights. (if there are any)
+        print("checking the sparsity...")
         calculate_pruned_sparsity(model)
 
 
@@ -82,8 +82,8 @@ def trainQuantAware(args, model, device, train_loader, test_loader, optimizer, e
         # calculate the loss (ON THE TRAINING SET)
         loss = F.cross_entropy(output, target)
 
-        # loss.backward(retain_graph=True)
-        loss.backward()
+        # I should not need this in theory. there is something that uses the graph after loss.backward()
+        loss.backward(retain_graph=True)
         optimizer.step()
         
         # logging

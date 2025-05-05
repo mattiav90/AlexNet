@@ -206,7 +206,7 @@ def plot_loss_accuracy(loss_acc, qat, pruning, final_sparsity, num_bits, title="
         df.to_csv(csv_path, index=False)
         print(f"CSV info saved to {csv_path}")
 
-    plt.show()
+    # plt.show()
 
 
 # generate model name and plot name
@@ -415,8 +415,6 @@ if __name__ == "__main__":
     # ********************************************** LOAD TO TRAIN MORE **********************************************
     if argom.load is not None:
         model=load_model(argom.load,model)
-        # set the model in evauation mode
-        model.eval()
         # calculate sparsity of loaded model 
         print("loading the model and checking that the sparsity is correct...")
         model = mask_frozen_weights(model)
@@ -424,20 +422,18 @@ if __name__ == "__main__":
         # apply the pruning mask to match the current sparsity. 
         model.to(cfg.device)
         print(f"Model {argom.load} loaded.")
-        
-        # loaded models are usually already trained. decrease the learning rate.
-        lr = lr * 0.5
+        lr = lr * 0.5   # reduce the lr because the model is already trained
         
 
 
-
-
+    # ******************************************************************************************************
     # ********************************************** TESTING **********************************************
+    # ******************************************************************************************************
     if argom.test:
+        
         
         # ********************************************** QAT TESTING **********************************************
         if argom.qat:
-
             print("testing qat.")
             model.to(device)
             model.eval()
@@ -478,19 +474,28 @@ if __name__ == "__main__":
     
     
     
-    
+
+    # ******************************************************************************************************
     # ********************************************** TRAINING **********************************************
+    # ******************************************************************************************************
     else:
+        print("setting model in train mode.")
         model.train()
         
     # ********************************************** TRAINING FP **********************************************
         if not argom.qat:
+            if argom.load is not None:
+                print("\nFP training on model: ",argom.load,"\n")
+
             model, loss_acc, final_sparsity = main_train_fp(trainset,train_loader,testset,test_loader,pruning,argom.es,model=model)
             print("the final sparsity is: ", final_sparsity)
         
         
     # ********************************************** TRAINING QAT **********************************************
         elif argom.qat:
+            if argom.load is not None:
+                print("\nQAT training on model: ",argom.load,"\n")
+
             model, stats, loss_acc = main_QuantAwareTrain(trainset,train_loader,testset,test_loader,argom.out,symmetrical,pruning,argom.es,model=model)
 
         # generate plot and model name

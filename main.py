@@ -17,10 +17,10 @@ import gc
 
 
 # files
-from quantizer_test import *
 from fp_model import *
 from qat_model import *
 from quantizer_train import *
+from quantizer_test  import *
 
 
 # ************************************  model  ************************************ 
@@ -286,7 +286,9 @@ def save_model_func(model, file_name, qat, out_name, stats=None, save_stats=Fals
     # During train(): BatchNorm uses batch stats; FakeQuantize updates its observer stats.
     # During eval(): BatchNorm uses stored running stats; FakeQuantize uses frozen quantization ranges.
     model.eval()
-    model.apply(torch.quantization.disable_observer)
+    # model.apply(torch.quantization.disable_observer)
+    print("histogram inside")
+    plot_weight_histogram(model,"conv1")
 
     # calculate_sparsity_mask(model)
     # apply_pruning_mask(model)
@@ -309,7 +311,7 @@ def save_model_func(model, file_name, qat, out_name, stats=None, save_stats=Fals
             torch.save({
             'model_state_dict': model.state_dict(),
             'stats': stats
-            },file_name )
+            } , file_name )
         
         # save just the model, with no stats
         else:
@@ -331,8 +333,36 @@ def save_model_func(model, file_name, qat, out_name, stats=None, save_stats=Fals
             
     
     
-    
 
+def plot_weight_histogram(model, layer_name, bins=100):
+    """
+    Plots a histogram of the weight distribution for a given layer in the model.
+
+    Args:
+        model (torch.nn.Module): The model (e.g., AlexNet).
+        layer_name (str): The full name of the layer (e.g., 'features.0').
+        bins (int): Number of histogram bins.
+    """
+    # Get the layer from the model
+    layer = dict(model.named_modules()).get(layer_name, None)
+    if layer is None:
+        raise ValueError(f"Layer '{layer_name}' not found in the model.")
+
+    if not hasattr(layer, 'weight') or layer.weight is None:
+        raise ValueError(f"Layer '{layer_name}' does not have a weight parameter.")
+
+    # Flatten weights and convert to CPU numpy
+    weights = layer.weight.detach().cpu().view(-1).numpy()
+
+    # Plot histogram
+    plt.figure(figsize=(6, 4))
+    plt.hist(weights, bins=bins, color='steelblue', edgecolor='black')
+    plt.title(f"Weight Distribution for Layer '{layer_name}'")
+    plt.xlabel("Weight Value")
+    plt.ylabel("Frequency")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
 
 
 
@@ -415,17 +445,39 @@ if __name__ == "__main__":
 
     
     # ********************************************** LOAD TO TRAIN MORE **********************************************
-    if argom.load is not None:
-        model=load_model(argom.load,model)
-        # calculate sparsity of loaded model 
-        print("loading the model and checking that the sparsity is correct...")
-        model = mask_frozen_weights(model)
-        calculate_sparsity_mask(model)
-        # apply the pruning mask to match the current sparsity. 
-        model.to(cfg.device)
-        print(f"Model {argom.load} loaded.")
-        lr = lr * 0.5   # reduce the lr because the model is already trained
+    if argom.load is not None or argom.test is not None:
+        # Loading a model with statistics (.pth)
+        if argom.load is not None:
+            model_2_load=argom.load
+        else:
+            model_2_load=argom.test
         
+
+        if model_2_load.endswith(".pth"):
+            checkpoint = torch.load(model_2_load,map_location=device, weights_only=False)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            stats=checkpoint['stats']
+            print(" <!!!> loaded model with stats.")
+        
+        elif model_2_load.endswith(".pt"):
+            model_state_dict = torch.load(model_2_load, map_location=device, weights_only=False)
+            if argom.test is not None:
+                print("\n <!!!> Loaded model with NO stats. Generating activation stats... mode: ",cfg.stats_mode,"\n")
+                stats = gatherStats(model,test_loader,cfg.stats_mode)
+                print("Calcualted stats: ",stats,"\n\n")
+ 
+
+        # printing histogram of loaded model 
+        plot_weight_histogram(model,"conv1")
+        plot_weight_histogram(model,"conv2")
+        
+        print("loading the model and checking that the sparsity is correct...")
+        calculate_sparsity_zeros(model)
+
+
+
+
+
 
 
     # ******************************************************************************************************
@@ -438,22 +490,11 @@ if __name__ == "__main__":
         if argom.qat:
             print("testing qat.")
             model.to(device)
-            model.eval()
-            calculate_sparsity_zeros(model)
-
-            # Loading a model with statistics (.pth)
-            try:
-                checkpoint = torch.load(argom.test,map_location=device, weights_only=False)
-                model.load_state_dict(checkpoint['model_state_dict'])
-                stats=checkpoint['stats']
-                print(" <!!!> loaded model with stats.")
             
-            # load a model with no stats. (generate the stats)
-            except:
-                model_state_dict = torch.load(argom.test, map_location=device, weights_only=False)
-                print("\n <!!!> Loaded model with NO stats. Generating activation stats... mode: ",cfg.stats_mode,"\n")
-                stats = gatherStats(model,test_loader,cfg.stats_mode)
-                print("Calcualted stats: ",stats,"\n\n")
+            # about to train the model. froze the pruned weights. 
+            model = mask_frozen_weights(model)
+            calculate_sparsity_mask(model)
+            lr = lr * 0.5   # reduce the lr because the model is already trained
 
             # testing the loaded model.  
             args={}
@@ -511,6 +552,12 @@ if __name__ == "__main__":
             args={}
             args["log_interval"] = cfg.log_interval  
             loss_temp, accuracy_temp = testQuantAware(args, model, device, test_loader, stats, act_quant=True, num_bits=num_bits, sym=cfg.symmetrical, is_test=True)
+
+            # print the weights histogram distribution
+            # the distributions make sense here. 
+            plot_weight_histogram(model,"conv1")
+            plot_weight_histogram(model,"conv2")
+            
 
         # generate plot and model name
         name,title,path = compute_name(argom.qat,num_bits,pruning,final_sparsity,loss_acc,out_name)

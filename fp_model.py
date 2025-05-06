@@ -153,16 +153,16 @@ def train(args, model, device, train_loader, optimizer, epoch, test_loader,early
 
 
 
-# Load model weights
-def load_model(file_name, model):
-    try:
-        state_dict = torch.load(file_name, map_location='cpu')
-        model.load_state_dict(state_dict)
-    except:
-        apply_dummy_pruning(model)
-        state_dict = torch.load(file_name, map_location='cpu')
-        model.load_state_dict(state_dict)
-    return model
+# # Load model weights
+# def load_model(file_name, model):
+#     try:
+#         state_dict = torch.load(file_name, map_location='cpu')
+#         model.load_state_dict(state_dict)
+#     except:
+#         apply_dummy_pruning(model)
+#         state_dict = torch.load(file_name, map_location='cpu')
+#         model.load_state_dict(state_dict)
+#     return model
 
 
 

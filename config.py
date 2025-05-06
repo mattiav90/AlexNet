@@ -21,7 +21,7 @@ class cfg:
     num_bits = 8
     symmetrical = True
     stats_mode = "entropy"   # minmax or entropy
-    activation_bit = 8   # remember to turn this off if you do not need it . (None is off)
+    activation_bit = None   # remember to turn this off if you do not need it . (None is off)
 
     # pruning
     pruning = False

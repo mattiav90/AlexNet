@@ -127,6 +127,13 @@ def updateStats(x, stats, key, mode="minmax"):
         
         # Detach and flatten
         x_flat = x.detach().view(-1).cpu()
+
+        # Filter out non-finite values (NaN or inf)
+        x_flat = x_flat[torch.isfinite(x_flat)]
+
+        # If empty after filtering, skip this update
+        if x_flat.numel() == 0:
+            return stats
         
         # Compute min and max from actual data
         x_min = x_flat.min().item()

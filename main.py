@@ -287,8 +287,10 @@ def save_model_func(model, file_name, qat, out_name, stats=None, save_stats=Fals
     # During eval(): BatchNorm uses stored running stats; FakeQuantize uses frozen quantization ranges.
     model.eval()
     model.apply(torch.quantization.disable_observer)
+
+    # calculate_sparsity_mask(model)
     # apply_pruning_mask(model)
-    make_pruning_permanent(model)
+    # make_pruning_permanent(model)
 
     if out_name is not None:
         file_name=out_name
@@ -303,7 +305,7 @@ def save_model_func(model, file_name, qat, out_name, stats=None, save_stats=Fals
             if not file_name.endswith('.pth'):
                 file_name += '.pth'
                 
-            print("Saving the model with this stats: ",stats )
+            print("Saving the model with the activation stats...  " )
             torch.save({
             'model_state_dict': model.state_dict(),
             'stats': stats
@@ -418,7 +420,7 @@ if __name__ == "__main__":
         # calculate sparsity of loaded model 
         print("loading the model and checking that the sparsity is correct...")
         model = mask_frozen_weights(model)
-        calculate_pruned_sparsity(model)
+        calculate_sparsity_mask(model)
         # apply the pruning mask to match the current sparsity. 
         model.to(cfg.device)
         print(f"Model {argom.load} loaded.")
@@ -437,6 +439,7 @@ if __name__ == "__main__":
             print("testing qat.")
             model.to(device)
             model.eval()
+            calculate_sparsity_zeros(model)
 
             # Loading a model with statistics (.pth)
             try:
@@ -466,7 +469,7 @@ if __name__ == "__main__":
             print("testing fp precision")
             model=load_model(argom.test,model)
             model.to(cfg.device)
-            calculate_weight_sparsity(model)
+            calculate_sparsity_zeros(model)
             args_dict = {"log_interval": cfg.log_interval}
             test_model(args_dict, model, cfg.device, test_loader)
 
@@ -497,6 +500,17 @@ if __name__ == "__main__":
                 print("\nQAT training on model: ",argom.load,"\n")
 
             model, stats, loss_acc = main_QuantAwareTrain(trainset,train_loader,testset,test_loader,argom.out,symmetrical,pruning,argom.es,model=model)
+
+            # make the pruning permanent before testing the last time. 
+            print("\n *** finalizing pruning *** ")
+            make_pruning_permanent(model)
+            print("\n **** counting the zeros sparsity ****")
+            calculate_sparsity_zeros(model)
+
+            print("\n *** Testing after training *** ")
+            args={}
+            args["log_interval"] = cfg.log_interval  
+            loss_temp, accuracy_temp = testQuantAware(args, model, device, test_loader, stats, act_quant=True, num_bits=num_bits, sym=cfg.symmetrical, is_test=True)
 
         # generate plot and model name
         name,title,path = compute_name(argom.qat,num_bits,pruning,final_sparsity,loss_acc,out_name)

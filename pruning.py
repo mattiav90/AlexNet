@@ -16,8 +16,8 @@ def apply_pruning(model, amount):
             prune.l1_unstructured(module, name='weight', amount=amount)
 
 
-# calcualted pruning sparsity 
-def calculate_pruned_sparsity(model, verbose=True):
+# calcualted pruning sparsity. use the mask 
+def calculate_sparsity_mask(model, verbose=True):
     total_zeros = 0
     total_elements = 0
     found_mask = False
@@ -54,19 +54,23 @@ def calculate_pruned_sparsity(model, verbose=True):
 
 
 # just calculate the weigghts sparsity, do not apply the mask
-def calculate_weight_sparsity(model, verbose=True):
+def calculate_sparsity_zeros(model, verbose=True, eps=0.0):
     total_zeros = 0
     total_elements = 0
     found_weights = False
-    
-    print("Layer-wise sparsity (counting zero weights):")
+
+    if verbose:
+        print("Layer-wise sparsity (counting zero weights):")
 
     for name, module in model.named_modules():
         if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
-            if hasattr(module, 'weight'):
+            if hasattr(module, 'weight') and module.weight is not None:
                 weight = module.weight.data
                 num_elements = weight.numel()
-                num_zeros = (weight == 0).sum().item()
+                if eps > 0.0:
+                    num_zeros = (weight.abs() < eps).sum().item()
+                else:
+                    num_zeros = (weight == 0).sum().item()
                 total_elements += num_elements
                 total_zeros += num_zeros
                 found_weights = True
@@ -137,13 +141,27 @@ def apply_dummy_pruning(model):
 
 # reapply pruning mask to loaded model 
 def mask_frozen_weights(model):
+    print("Reapplying pruning masks to freeze zeroed weights...")
     for name, module in model.named_modules():
         if isinstance(module, (nn.Conv2d, nn.Linear)):
-            # Only apply mask to weights that exist and are trainable
             if hasattr(module, 'weight') and module.weight is not None:
-                # Build binary mask: 1 where weight != 0, 0 where weight == 0
-                weight_mask = (module.weight != 0).to(dtype=torch.float32)
+                # Create a binary mask: 1 where weight != 0, 0 where weight == 0
+                with torch.no_grad():
+                    weight_mask = (module.weight != 0).float()
 
-                # Apply custom mask (prune)
+                # Apply the pruning mask using PyTorch pruning utilities
                 prune.custom_from_mask(module, name='weight', mask=weight_mask)
+
+                # Register backward hook to zero out gradients at pruned locations
+                def hook_factory(mask_tensor):
+                    def hook(grad):
+                        return grad * mask_tensor
+                    return hook
+
+                module.weight.register_hook(hook_factory(weight_mask))
+
+                # Make sure .weight_orig requires grad (and is a leaf tensor)
+                if hasattr(module, 'weight_orig'):
+                    module.weight_orig.requires_grad_(True)
+
     return model

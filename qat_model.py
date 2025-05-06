@@ -53,7 +53,7 @@ def main_QuantAwareTrain(trainset,train_loader,testset,test_loader,model_name,sy
 
         # make sure that it is not training the pruned weights. (if there are any)
         print("checking the sparsity...")
-        calculate_pruned_sparsity(model)
+        calculate_sparsity_mask(model)
 
 
     return model, stats, loss_acc

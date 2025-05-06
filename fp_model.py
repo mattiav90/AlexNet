@@ -68,19 +68,19 @@ def main_train_fp(trainset,train_loader,testset,test_loader,pruning,early_stoppi
                         print(f"{name} pruning mask applied: {module.weight_mask.shape}")
             # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
             
-            current_sparsity = calculate_pruned_sparsity(model)
+            current_sparsity = calculate_sparsity_mask(model)
             if current_sparsity >= cfg.final_sparsity:
                 pruning=False
                 print(f"sparsity ({current_sparsity}) reached final: {cfg.final_sparsity}. stopping pruning.")
 
         # sparsity calcualation
-        current_sparsity = calculate_pruned_sparsity(model,verbose=False)
+        current_sparsity = calculate_sparsity_mask(model,verbose=False)
 
 
     # remove pruning wrappers. 
     # if pruning was active during this training, it might be off by now.
     if fool:
-        last_sparsity = calculate_pruned_sparsity(model)
+        last_sparsity = calculate_sparsity_mask(model)
         print("final sparsity: ", last_sparsity)
         try:
             apply_pruning_mask(model)

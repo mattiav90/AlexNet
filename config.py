@@ -8,7 +8,7 @@ class cfg:
     test_batch_size = 128
 
     input_size = 224
-    epochs = 2              # number of epochs
+    epochs = 10             # number of epochs
     lr = 0.01               # do not use bigger than 0.01
     momentum = 0.9
     seed = 1
@@ -18,16 +18,16 @@ class cfg:
 
     # QAT cfg
     activation_QAT_start = 0
-    num_bits = 8
+    num_bits = 2
     symmetrical = True
     stats_mode = "entropy"   # minmax or entropy
-    activation_bit = None   # remember to turn this off if you do not need it . (None is off)
+    activation_bit = 8   # remember to turn this off if you do not need it . (None is off)
 
     # pruning
     pruning = False
     pruning_every = 2
     pruning_ratio = 0.1     # prune a fixed pruning ratio
-    final_sparsity = 90
+    final_sparsity = 50
     prune_after_epoch = 0   # start pruning after this epoch
 
 

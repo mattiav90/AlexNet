@@ -8,7 +8,7 @@ class cfg:
     test_batch_size = 128
 
     input_size = 224
-    epochs = 10             # number of epochs
+    epochs = 1             # number of epochs
     lr = 0.01               # do not use bigger than 0.01
     momentum = 0.9
     seed = 1
@@ -18,7 +18,7 @@ class cfg:
 
     # QAT cfg
     activation_QAT_start = 0
-    num_bits = 2
+    num_bits = 8
     symmetrical = True
     stats_mode = "entropy"   # minmax or entropy
     activation_bit = 8   # remember to turn this off if you do not need it . (None is off)

@@ -147,8 +147,15 @@ def updateStats(x, stats, key, mode="minmax"):
 
             # Use cumulative distribution to find where the entropy "mass" is
             cdf = torch.cumsum(prob, dim=0)
-            entropy_min_idx = (cdf >= 0.01).nonzero(as_tuple=True)[0].min().item()
-            entropy_max_idx = (cdf <= 0.99).nonzero(as_tuple=True)[0].max().item()
+            nonzero_min = (cdf >= 0.01).nonzero(as_tuple=True)[0]
+            nonzero_max = (cdf <= 0.99).nonzero(as_tuple=True)[0]
+
+            if len(nonzero_min) == 0 or len(nonzero_max) == 0:
+                entropy_min_idx = 0
+                entropy_max_idx = num_bins - 1
+            else:
+                entropy_min_idx = nonzero_min.min().item()
+                entropy_max_idx = nonzero_max.max().item()
 
             # Convert bin indices back to values
             bin_width = (x_max - x_min) / num_bins

@@ -443,14 +443,14 @@ if __name__ == "__main__":
 
             # Loading a model with statistics (.pth)
             try:
-                checkpoint = torch.load(argom.test,map_location=device)
+                checkpoint = torch.load(argom.test,map_location=device, weights_only=False)
                 model.load_state_dict(checkpoint['model_state_dict'])
                 stats=checkpoint['stats']
-                print(" <!!!> loaded model with stats. stats: ",stats,"\n")
+                print(" <!!!> loaded model with stats.")
             
             # load a model with no stats. (generate the stats)
             except:
-                model_state_dict = torch.load(argom.test, map_location=device)
+                model_state_dict = torch.load(argom.test, map_location=device, weights_only=False)
                 print("\n <!!!> Loaded model with NO stats. Generating activation stats... mode: ",cfg.stats_mode,"\n")
                 stats = gatherStats(model,test_loader,cfg.stats_mode)
                 print("Calcualted stats: ",stats,"\n\n")
@@ -521,7 +521,6 @@ if __name__ == "__main__":
 
     # ********************************************** SAVE MODEL **********************************************
         if save_model:
-            print("saving model...")
             if argom.qat:
                 print("save model qat")
                 save_model_func(model,path,True,out_name,stats=stats,save_stats=True)

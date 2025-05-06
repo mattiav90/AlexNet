@@ -58,6 +58,7 @@ def calculate_sparsity_zeros(model, verbose=True, eps=0.0):
     total_zeros = 0
     total_elements = 0
     found_weights = False
+    print("ZERO SPARSITY")
 
     if verbose:
         print("Layer-wise sparsity (counting zero weights):")

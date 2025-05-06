@@ -335,14 +335,7 @@ def save_model_func(model, file_name, qat, out_name, stats=None, save_stats=Fals
     
 
 def plot_weight_histogram(model, layer_name, bins=100):
-    """
-    Plots a histogram of the weight distribution for a given layer in the model.
 
-    Args:
-        model (torch.nn.Module): The model (e.g., AlexNet).
-        layer_name (str): The full name of the layer (e.g., 'features.0').
-        bins (int): Number of histogram bins.
-    """
     # Get the layer from the model
     layer = dict(model.named_modules()).get(layer_name, None)
     if layer is None:
@@ -354,15 +347,42 @@ def plot_weight_histogram(model, layer_name, bins=100):
     # Flatten weights and convert to CPU numpy
     weights = layer.weight.detach().cpu().view(-1).numpy()
 
-    # Plot histogram
-    plt.figure(figsize=(6, 4))
-    plt.hist(weights, bins=bins, color='steelblue', edgecolor='black')
+    # Plot histogram and get bin info
+    plt.figure(figsize=(8, 5))
+    counts, bin_edges, patches = plt.hist(weights, bins=bins, color='steelblue', edgecolor='black')
+
+    # Add labels on top of each bar
+    for count, patch in zip(counts, patches):
+        if count > 0:
+            x = patch.get_x() + patch.get_width() / 2
+            y = patch.get_height()
+            plt.text(x, y, f'{int(count)}', ha='center', va='bottom', fontsize=8, rotation=90)
+
     plt.title(f"Weight Distribution for Layer '{layer_name}'")
     plt.xlabel("Weight Value")
     plt.ylabel("Frequency")
     plt.grid(True)
     plt.tight_layout()
     plt.show()
+
+
+
+def load_model(model,name):
+
+    if name.endswith(".pth"):
+        checkpoint = torch.load(name,map_location=device, weights_only=False)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        stats=checkpoint['stats']
+        print(" <!!!> loaded model with stats.")
+
+    elif name.endswith(".pt"):
+        state_dict=torch.load(name,map_location=device,weights_only=False)
+        model.load_state_dict(state_dict)
+        stats= None
+    
+    model.to(device)
+    
+    return model, stats
 
 
 
@@ -440,42 +460,8 @@ if __name__ == "__main__":
     # create alexnet model
     use_cuda = not no_cuda and torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
-    model = AlexNet()
-    model.to(device)
 
     
-    # ********************************************** LOAD TO TRAIN MORE **********************************************
-    if argom.load is not None or argom.test is not None:
-        # Loading a model with statistics (.pth)
-        if argom.load is not None:
-            model_2_load=argom.load
-        else:
-            model_2_load=argom.test
-        
-
-        if model_2_load.endswith(".pth"):
-            checkpoint = torch.load(model_2_load,map_location=device, weights_only=False)
-            model.load_state_dict(checkpoint['model_state_dict'])
-            stats=checkpoint['stats']
-            print(" <!!!> loaded model with stats.")
-        
-        elif model_2_load.endswith(".pt"):
-            model_state_dict = torch.load(model_2_load, map_location=device, weights_only=False)
-            if argom.test is not None:
-                print("\n <!!!> Loaded model with NO stats. Generating activation stats... mode: ",cfg.stats_mode,"\n")
-                stats = gatherStats(model,test_loader,cfg.stats_mode)
-                print("Calcualted stats: ",stats,"\n\n")
- 
-
-        # printing histogram of loaded model 
-        plot_weight_histogram(model,"conv1")
-        plot_weight_histogram(model,"conv2")
-        
-        print("loading the model and checking that the sparsity is correct...")
-        calculate_sparsity_zeros(model)
-
-
-
 
 
 
@@ -485,17 +471,16 @@ if __name__ == "__main__":
     # ******************************************************************************************************
     if argom.test:
         
+        model = AlexNet()
+        model,stats=load_model(model,argom.test)
+        model.eval()
+        plot_weight_histogram(model,"conv1")
+        calculate_sparsity_zeros(model,eps=1e-4)
+
         
         # ********************************************** QAT TESTING **********************************************
         if argom.qat:
             print("testing qat.")
-            model.to(device)
-            
-            # about to train the model. froze the pruned weights. 
-            model = mask_frozen_weights(model)
-            calculate_sparsity_mask(model)
-            lr = lr * 0.5   # reduce the lr because the model is already trained
-
             # testing the loaded model.  
             args={}
             args["log_interval"] = cfg.log_interval
@@ -503,10 +488,8 @@ if __name__ == "__main__":
                                             act_quant=True, num_bits=num_bits, sym=cfg.symmetrical, is_test=True)
 
 
-
-
         # ********************************************** FP TESTING **********************************************
-        else:
+        elif argom.qat is None:
             print("testing fp precision")
             model=load_model(argom.test,model)
             model.to(cfg.device)
@@ -522,9 +505,36 @@ if __name__ == "__main__":
     # ******************************************************************************************************
     # ********************************************** TRAINING **********************************************
     # ******************************************************************************************************
-    else:
+
+    if argom.load or ( argom.load is None and argom.test is None ):
+
+        # ********************************************** LOAD a model TO TRAIN MORE **********************************************
+        if argom.load:
+            model=AlexNet()
+            # Loading a model with statistics (.pth)
+            model,stats = load_model(model,argom.load)
+
+            # printing histogram of loaded model 
+            plot_weight_histogram(model,"conv1")
+            plot_weight_histogram(model,"conv2")
+            
+            print("loading the model and checking that the sparsity is correct...")
+            calculate_sparsity_zeros(model)
+
+
+
+            lr = lr * 0.5   # reduce the lr because the model is already trained
+
+        
+        # ********************************************** CREATE A NEW MODEL **********************************************
+        else:
+            model=AlexNet()
+            
+        
         print("setting model in train mode.")
+        model.to(device)
         model.train()
+        
         
     # ********************************************** TRAINING FP **********************************************
         if not argom.qat:
@@ -546,7 +556,7 @@ if __name__ == "__main__":
             print("\n *** finalizing pruning *** ")
             make_pruning_permanent(model)
             print("\n **** counting the zeros sparsity ****")
-            calculate_sparsity_zeros(model)
+            calculate_sparsity_zeros(model,eps=1e-4)
 
             print("\n *** Testing after training *** ")
             args={}

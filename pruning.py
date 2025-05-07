@@ -8,12 +8,14 @@ import torch.nn.utils.prune as prune
 # ************************************************************************************************************
 # ************************************  pruning  ************************************ 
 
-# apply pruning. 
-def apply_pruning(model, amount):
+# prune the network
+def prune_model(model, amount):
     for name, module in model.named_modules():
         if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
             # Apply or re-apply pruning to accumulate sparsity
             prune.l1_unstructured(module, name='weight', amount=amount)
+
+
 
 
 # calcualted pruning sparsity. use the mask 
@@ -21,9 +23,7 @@ def calculate_sparsity_mask(model, verbose=True):
     total_zeros = 0
     total_elements = 0
     found_mask = False
-
-    if verbose:
-        print("Layer-wise sparsity (via mask):")
+    print("calculating sparsity via MASK")
 
     for name, module in model.named_modules():
         if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
@@ -58,10 +58,8 @@ def calculate_sparsity_zeros(model, verbose=True, eps=0.0):
     total_zeros = 0
     total_elements = 0
     found_weights = False
-    print("ZERO SPARSITY")
+    print("calculating sparsity via ZEROS")
 
-    if verbose:
-        print("Layer-wise sparsity (counting zero weights):")
 
     for name, module in model.named_modules():
         if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
@@ -94,8 +92,9 @@ def calculate_sparsity_zeros(model, verbose=True, eps=0.0):
 
 
 
+
 # permanently apply the pruning mask 
-def apply_pruning_mask(model):
+def finalize_pruning(model):
     print("removing the pruning mask. inside function log.")
     for name, module in model.named_modules():
         if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
@@ -103,15 +102,9 @@ def apply_pruning_mask(model):
 
 
 
-def reset_optimizer_state(optimizer, model):
-    for group in optimizer.param_groups:
-        for p in group['params']:
-            state = optimizer.state[p]
-            if 'momentum_buffer' in state:
-                state['momentum_buffer'].zero_()
 
 
-
+# make pruning permanent (zero out the weights that are masked out) to save the model 
 def make_pruning_permanent(model):
     print("Making pruning permanent (zeroed weights, no mask).")
     for name, module in model.named_modules():
@@ -127,20 +120,7 @@ def make_pruning_permanent(model):
 
 
 
-    
-def apply_dummy_pruning(model):
-    # Apply dummy pruning to match saved state_dict keys
-    for module in model.modules():
-        if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
-            prune.identity(module, 'weight')  # adds `weight_orig` and `weight_mask`
-
-
-
-
-
-
-
-# reapply pruning mask to loaded model 
+#  load a pruned model and apply the mask to avoid training the weights. 
 def mask_frozen_weights(model):
     print("Reapplying pruning masks to freeze zeroed weights...")
     for name, module in model.named_modules():

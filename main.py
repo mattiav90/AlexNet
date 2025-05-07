@@ -291,7 +291,7 @@ def save_model_func(model, file_name, qat, out_name, stats=None, save_stats=Fals
     plot_weight_histogram(model,"conv1")
 
     # calculate_sparsity_mask(model)
-    # apply_pruning_mask(model)
+    # finalize_pruning(model)
     # make_pruning_permanent(model)
 
     if out_name is not None:
@@ -521,7 +521,9 @@ if __name__ == "__main__":
             print("loading the model and checking that the sparsity is correct...")
             calculate_sparsity_zeros(model)
 
-
+            # re apply mask to avoid weights update. 
+            mask_frozen_weights(model)
+            calculate_sparsity_mask(model)
 
             lr = lr * 0.5   # reduce the lr because the model is already trained
 

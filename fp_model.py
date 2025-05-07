@@ -58,7 +58,7 @@ def main_train_fp(trainset,train_loader,testset,test_loader,pruning,early_stoppi
         # if pruning is active. 
         if pruning and ( epoch % prune_every==0 ) : 
             print("pruning at epoch: ",epoch)
-            apply_pruning(model,prune_amount)
+            prune_model(model,prune_amount)
             
             
             # comment ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -83,7 +83,7 @@ def main_train_fp(trainset,train_loader,testset,test_loader,pruning,early_stoppi
         last_sparsity = calculate_sparsity_mask(model)
         print("final sparsity: ", last_sparsity)
         try:
-            apply_pruning_mask(model)
+            finalize_pruning(model)
         except:
             # it is possible, with early stopping, that the pruning is active but has not been applied yet.
             print("no pruning was applied yet.")

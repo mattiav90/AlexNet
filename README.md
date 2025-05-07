@@ -1,25 +1,26 @@
 <!-- README  -->
 
 ## train the floating point alexnet ##
-to train the floating point AlexNet, make sure that in the config file pruning is false, 
+to train the floating point AlexNet, make sure that in the config file, the pruning variable is false, 
 set the number of epochs and run.
 
 python3 main.py 
 
+to test the dense model that is in the google folder, type:
+
+python3 main.py --test models/fp/0/name.pt 
+
 ## introduce sparsity in the dense alexnet model ##
+once the dense model is traned we can introduce sparsity in it. 
 to introduce sparsity in the dense alexnet model, set the configuration file to pruning=True,
-set the desired final sparsity. let pruning_every be 2. 
+set the desired final sparsity. let pruning_every be 2. Set the desired number of epochs (maybe 15).
 run:
 
-python3 main.py --load model/dense_alexnet_model.pt
+python3 main.py --load model/fp/0/dense_alexnet_model.pt
 
 This will load the previously trained alexnet dense model and progressively apply pruning to it. 
 
-
-
-## testing pruning ##
-all the fp dense and unstructured sparsity models are in the zip file.
-they are testable with 
+to test the pruned models you can type:
 
 python3 main.py --test models/fp/0/qat_False_bits_8_pruning_False_sparsity_0_acc_87.pt
 python3 main.py --test models/fp/25/qat_False_bits_8_pruning_True_sparsity_27_acc_88.pt
@@ -30,7 +31,6 @@ python3 main.py --test models/fp/90/...
 the script will load the model, count the zeros in the layers to confirm that the model is properly 
 sparsified, show the calculated sparsity.
 then run a test with it on the testing dataset. 
-
 
 
 
@@ -53,13 +53,25 @@ the accuracy will initially drop depending on the quantization settings, then ev
 
 
 ## testing qat ##
-as mentioned in the report, unfortunately there is something wrong in my forward pass for quantization deployment. 
-during training I see good accuracy, even with both weights and activations quantized, but then, when I save the model and try to load it and test it, 
-the accuracy drops significantly. 
-I think there might be something inconsistent in the file quantizer_test.py. 
+currently there is something wrong with this step. 
+my steps are: 
+- I load the pruned fp model
+- I look at the values that are 0, and apply a pruning mask on them, to avoid them to be used in the training
+- perform the training, and get the results that I report in the pdf. 
+- save the model. 
+- when I load the model and test it again, the accuracy dropped. 
+
+I am not sure what is the problem during the inference phase, I am still investigating. 
 
 to run a test on the pruned and quantized models:
 
 python3 main.py --test models/int8/50/... --qat
 
 the accuracy unfortunally will not reflect the one obtained during traing, I am still figuring out why. 
+
+# quantized models that works
+currently the quantized models that works are the dense one. to test them use:
+
+python3 main.py --test models/int8/0/model.pth --qat
+python3 main.py --test models/int4/0/model.pth --qat
+

@@ -560,10 +560,12 @@ if __name__ == "__main__":
             print("\n **** counting the zeros sparsity ****")
             calculate_sparsity_zeros(model,eps=1e-4)
 
-            print("\n *** Testing after training *** ")
+
+            print("\n *** Testing after training *** \n")
             args={}
             args["log_interval"] = cfg.log_interval  
             loss_temp, accuracy_temp = testQuantAware(args, model, device, test_loader, stats, act_quant=True, num_bits=num_bits, sym=cfg.symmetrical, is_test=True)
+            print("\n\n")
 
             # print the weights histogram distribution
             # the distributions make sense here. 

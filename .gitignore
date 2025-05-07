@@ -11,3 +11,6 @@ mine/*.pth
 *.pth
 
 /models/*
+
+**/.DS_Store
+/__pycache__/*
